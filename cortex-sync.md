@@ -10,8 +10,8 @@ since the last sync and update their `last_meaningful_contact` date.
 Read the file `~/.cortex-sync-state.json`.
 
 - If the file exists, use the `last_run` value as your start date.
-- If the file does not exist, use 30 days ago as the start date and tell
-  me this is a first run.
+- If the file does not exist, this is a first run — use 1 year ago as
+  the start date and tell me so in the final report.
 
 ---
 
