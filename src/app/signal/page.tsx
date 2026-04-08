@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Signal } from "@/lib/types";
 
 interface SignalResult extends Signal {
@@ -9,12 +9,32 @@ interface SignalResult extends Signal {
 
 export default function SignalPage() {
   const [input, setInput] = useState("");
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<{
     type: "success" | "error";
     message: string;
     signal?: Signal;
   } | null>(null);
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file) return;
+    const MAX_BYTES = 4 * 1024 * 1024; // 4 MB — Vercel body limit
+    if (file.size > MAX_BYTES) {
+      setSaveStatus({ type: "error", message: "File too large (max 4 MB). Paste the text directly for larger documents." });
+      return;
+    }
+    const allowed = ["application/pdf", "text/plain", "text/markdown"];
+    if (!allowed.includes(file.type) && !file.name.endsWith(".md")) {
+      setSaveStatus({ type: "error", message: "Only PDF, .txt, and .md files are supported." });
+      return;
+    }
+    setAttachedFile(file);
+    setSaveStatus(null);
+  }
 
   const [query, setQuery] = useState("");
   const [querying, setQuerying] = useState(false);
@@ -36,25 +56,44 @@ export default function SignalPage() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() && !attachedFile) return;
     setSaving(true);
     setSaveStatus(null);
     try {
+      let body: Record<string, string | undefined>;
+
+      if (attachedFile) {
+        // Read file as base64
+        const file_data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            resolve(result.split(",")[1]); // strip data:...;base64, prefix
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(attachedFile);
+        });
+        body = {
+          file_data,
+          file_type: attachedFile.type || (attachedFile.name.endsWith(".md") ? "text/markdown" : "text/plain"),
+          file_name: attachedFile.name,
+          context: input.trim() || undefined,
+        };
+      } else {
+        body = { raw_input: input };
+      }
+
       const res = await fetch("/api/signal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw_input: input }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (res.ok) {
-        setSaveStatus({
-          type: "success",
-          message: "Saved",
-          signal: data.signal,
-        });
-        // Prepend to recent feed
+        setSaveStatus({ type: "success", message: "Saved", signal: data.signal });
         setRecent((prev) => [data.signal, ...prev]);
         setInput("");
+        setAttachedFile(null);
       } else {
         setSaveStatus({ type: "error", message: data.error });
       }
@@ -93,17 +132,54 @@ export default function SignalPage() {
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Paste anything..."
-          rows={6}
+          placeholder={attachedFile ? "Add context (optional)..." : "Paste anything..."}
+          rows={attachedFile ? 2 : 6}
           className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zinc-300 resize-none"
         />
+
+        {/* Attached file pill */}
+        {attachedFile && (
+          <div className="flex items-center gap-2 mt-2 px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg">
+            <span className="text-xs text-zinc-500">
+              {attachedFile.type === "application/pdf" ? "PDF" : "TXT"}
+            </span>
+            <span className="text-sm text-zinc-700 flex-1 truncate">{attachedFile.name}</span>
+            <button
+              type="button"
+              onClick={() => setAttachedFile(null)}
+              className="text-zinc-400 hover:text-zinc-700 text-lg leading-none"
+              aria-label="Remove file"
+            >
+              &times;
+            </button>
+          </div>
+        )}
+
         <div className="flex items-center justify-between mt-3">
-          <p className="text-xs text-zinc-400">
-            Claude will summarize and tag it. The original is kept as a footnote.
-          </p>
+          <div className="flex items-center gap-3">
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.txt,.md,text/plain,text/markdown,application/pdf"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-700 border border-zinc-200 hover:border-zinc-400 px-3 py-1.5 rounded-lg"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+              Attach file
+            </button>
+            <p className="text-xs text-zinc-400 hidden sm:block">PDF, .txt, .md — max 4 MB</p>
+          </div>
           <button
             type="submit"
-            disabled={saving || !input.trim()}
+            disabled={saving || (!input.trim() && !attachedFile)}
             className="px-6 py-2.5 bg-zinc-900 text-white rounded-lg text-sm font-medium hover:bg-zinc-700 disabled:opacity-50"
           >
             {saving ? "Processing..." : "Save to brain"}

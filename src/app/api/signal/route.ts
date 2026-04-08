@@ -116,12 +116,102 @@ async function enrich_input(raw: string): Promise<{ content: string; source_url:
   };
 }
 
+const EXTRACT_PROMPT = (context?: string) => `You are a personal knowledge assistant. Extract the core knowledge from this input and return ONLY valid JSON, no other text.
+${context ? `\nContext note: ${context}\n` : ""}
+Return:
+{
+  "summary": "2-3 sentences capturing the actual insight or knowledge — not what the piece is about, but what it says or means. Write as if explaining to yourself why this matters.",
+  "topics": ["3-6 specific topic tags — concrete, not generic. e.g. 'creator-monetization', 'trust-graphs', 'sports-media-distribution' not 'media' or 'business'"],
+  "source_title": "title of the article/document/video if identifiable, otherwise null",
+  "source_url": "URL if present in the input, otherwise null"
+}`;
+
+// Handles PDF files via Claude's native document block
+async function ingest_pdf(file_data: string, file_name: string, context?: string) {
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 512,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: file_data,
+            },
+          } as Parameters<typeof anthropic.messages.create>[0]["messages"][0]["content"][0],
+          {
+            type: "text",
+            text: EXTRACT_PROMPT(context),
+          },
+        ],
+      },
+    ],
+  });
+  return response;
+}
+
 // ── POST — ingest new signal ─────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
   try {
-    const { raw_input } = await request.json();
+    const body = await request.json();
+    const { raw_input, file_data, file_type, file_name, context } = body;
 
+    // ── File upload path ────────────────────────────────────────────────────
+    if (file_data && file_type && file_name) {
+      let response;
+      let stored_raw: string;
+
+      if (file_type === "application/pdf") {
+        // PDFs go straight to Claude as a document block
+        response = await ingest_pdf(file_data, file_name, context);
+        stored_raw = `[PDF] ${file_name}${context ? ` — ${context}` : ""}`;
+      } else {
+        // Text/markdown: decode base64 to string
+        const decoded = Buffer.from(file_data, "base64").toString("utf-8");
+        const truncated = decoded.slice(0, 8000);
+        const extract_res = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 512,
+          messages: [{
+            role: "user",
+            content: `${EXTRACT_PROMPT(context)}\n\nInput:\n${truncated}`,
+          }],
+        });
+        response = extract_res;
+        stored_raw = `[${file_name}] ${truncated.slice(0, 500)}`;
+      }
+
+      const raw = response.content[0].type === "text" ? response.content[0].text : "{}";
+      const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+      let parsed: { summary: string; topics: string[]; source_title: string | null; source_url: string | null };
+      try {
+        parsed = JSON.parse(clean);
+      } catch {
+        return NextResponse.json({ error: "Could not process that file. Try again." }, { status: 500 });
+      }
+
+      const { data, error } = await getSupabase()
+        .from("signals")
+        .insert({
+          summary: parsed.summary,
+          topics: parsed.topics,
+          source_title: parsed.source_title ?? file_name,
+          source_url: parsed.source_url ?? null,
+          raw_input: stored_raw,
+        })
+        .select()
+        .single();
+
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ success: true, signal: data });
+    }
+
+    // ── Text / URL path (existing) ──────────────────────────────────────────
     if (!raw_input?.trim()) {
       return NextResponse.json({ error: "Nothing to save" }, { status: 400 });
     }
