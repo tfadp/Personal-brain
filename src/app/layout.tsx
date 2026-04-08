@@ -3,8 +3,8 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cortex Contacts",
-  description: "Personal contact intelligence",
+  title: "Cortex",
+  description: "Personal knowledge and network intelligence",
 };
 
 export default function RootLayout({
@@ -23,6 +23,9 @@ export default function RootLayout({
             <div className="flex gap-6 text-sm text-zinc-600">
               <Link href="/" className="hover:text-zinc-900">
                 Query
+              </Link>
+              <Link href="/signal" className="hover:text-zinc-900">
+                Signal
               </Link>
               <Link href="/contacts" className="hover:text-zinc-900">
                 Contacts

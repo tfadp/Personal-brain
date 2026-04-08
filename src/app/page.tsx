@@ -23,6 +23,14 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
 
+  // Update command state
+  const [command, setCommand] = useState("");
+  const [updating, setUpdating] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
   async function runQuery(text: string) {
     if (!text.trim()) return;
     setLoading(true);
@@ -47,6 +55,31 @@ export default function Home() {
     await runQuery(query);
   }
 
+  async function handleUpdate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!command.trim()) return;
+    setUpdating(true);
+    setUpdateStatus(null);
+    try {
+      const res = await fetch("/api/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUpdateStatus({ type: "success", message: data.action });
+        setCommand("");
+      } else {
+        setUpdateStatus({ type: "error", message: data.error });
+      }
+    } catch {
+      setUpdateStatus({ type: "error", message: "Update failed. Try again." });
+    } finally {
+      setUpdating(false);
+    }
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-6 py-16">
       <div className="mb-12">
@@ -56,8 +89,8 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Preset queries — one click to populate and run */}
-      <div className="flex gap-2 mb-4">
+      {/* ── Search ─────────────────────────────────────────────────────── */}
+      <div className="flex gap-2 mb-4 flex-wrap">
         {[
           "Who haven't I spoken to in a while?",
           "Who are my strongest connections?",
@@ -109,7 +142,7 @@ export default function Home() {
       )}
 
       {!loading && results.length > 0 && (
-        <div className="space-y-4">
+        <div className="space-y-4 mb-16">
           {results.map((result, i) => (
             <div
               key={result.id || i}
@@ -182,6 +215,45 @@ export default function Home() {
           ))}
         </div>
       )}
+
+      {/* ── Update ─────────────────────────────────────────────────────── */}
+      <div className="border-t border-zinc-100 pt-10">
+        <p className="text-sm font-medium text-zinc-700 mb-1">Update a contact</p>
+        <p className="text-xs text-zinc-400 mb-3">
+          Examples: &ldquo;add note to Sarah Chen — met at conference&rdquo; · &ldquo;update John's last contact to today&rdquo; · &ldquo;change Maria's strength to strong&rdquo;
+        </p>
+        <form onSubmit={handleUpdate}>
+          <div className="flex gap-3">
+            <input
+              type="text"
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              placeholder="add note to [name] — [your note]"
+              className="flex-1 px-4 py-3 border border-zinc-200 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-zinc-300"
+            />
+            <button
+              type="submit"
+              disabled={updating || !command.trim()}
+              className="px-6 py-3 bg-zinc-900 text-white rounded-lg text-sm font-medium hover:bg-zinc-700 disabled:opacity-50"
+            >
+              {updating ? "Updating..." : "Update"}
+            </button>
+          </div>
+        </form>
+
+        {updateStatus && (
+          <div
+            className={`mt-3 px-4 py-3 rounded-lg text-sm ${
+              updateStatus.type === "success"
+                ? "bg-green-50 text-green-800"
+                : "bg-red-50 text-red-800"
+            }`}
+          >
+            {updateStatus.type === "success" ? "✓ " : "✗ "}
+            {updateStatus.message}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

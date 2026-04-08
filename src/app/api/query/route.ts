@@ -88,7 +88,7 @@ Return JSON with these optional fields (omit fields that aren't relevant):
       return NextResponse.json({ results: [], filters });
     }
 
-    // Step 3: Rank with Claude
+    // Step 3: Rank with Claude — weight by contact_quality so noise doesn't dominate
     const rankResponse = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 2048,
@@ -102,7 +102,14 @@ Query: "${query}"
 Contacts:
 ${JSON.stringify(candidates, null, 2)}
 
-Return ONLY valid JSON array, no other text. Return up to 10 results, ranked by relevance:
+IMPORTANT RANKING RULES:
+- contact_quality 3 = real relationship. Strongly prefer these. They should appear first if relevant.
+- contact_quality 2 = weak tie. Include if relevant and no quality-3 contact covers the same ground.
+- contact_quality 1 = noise/low value. Only include if no better option exists.
+- contact_quality null = unreviewed. Treat like quality 2.
+- follow_up = true means this person is waiting to hear back — surface them prominently if the query is about follow-ups or reconnecting.
+
+Return ONLY valid JSON array, no other text. Return up to 10 results, ranked by relevance then quality:
 [
   {
     "id": "contact uuid",
