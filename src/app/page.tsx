@@ -36,6 +36,7 @@ export default function Home() {
       });
       const data = await res.json();
       setResult(data);
+      setInput("");
     } catch {
       setResult({ type: "error", message: "Something went wrong. Try again." });
     } finally {
@@ -57,7 +58,7 @@ export default function Home() {
       <form onSubmit={handleSubmit} className="mb-8">
         <textarea
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => { setInput(e.target.value); if (result) setResult(null); }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
