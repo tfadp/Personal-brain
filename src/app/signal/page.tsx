@@ -93,7 +93,7 @@ export default function SignalPage() {
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={"Paste a URL, article text, newsletter excerpt, podcast notes, or your own idea...\n\nExample:\nhttps://example.com/article\n\nOr just a thought:\n\"Trust graphs as a monetization primitive — platforms that can verify relationship depth will unlock a new tier of creator revenue\""}
+          placeholder="Paste anything..."
           rows={6}
           className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-zinc-300 resize-none"
         />
