@@ -21,12 +21,6 @@ export default function RootLayout({
               Cortex
             </Link>
             <div className="flex gap-6 text-sm text-zinc-600">
-              <Link href="/" className="hover:text-zinc-900">
-                Query
-              </Link>
-              <Link href="/signal" className="hover:text-zinc-900">
-                Signal
-              </Link>
               <Link href="/contacts" className="hover:text-zinc-900">
                 Contacts
               </Link>

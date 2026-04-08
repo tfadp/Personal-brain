@@ -80,8 +80,6 @@ async function enrich_input(raw: string): Promise<{ content: string; source_url:
     return { content: trimmed, source_url: null, source_title: null };
   }
 
-  const video_id = extract_youtube_id(trimmed);
-
   // YouTube: use Supadata API (works from cloud IPs, Jina doesn't get transcripts)
   const video_id = extract_youtube_id(trimmed);
   if (video_id) {
