@@ -27,6 +27,9 @@ RULE: Do not change unless you follow Change Control in CLAUDE.md.
 | notes                   | text        | YES      |                              |
 | email                   | text        | YES      |                              |
 | linkedin_url            | text        | YES      |                              |
+| contact_quality         | integer     | YES      | 1=noise, 2=weak tie, 3=real  |
+| follow_up               | boolean     | YES      | default false                |
+| follow_up_note          | text        | YES      | context for follow-up        |
 | created_at              | timestamp   | YES      | default now()                |
 | updated_at              | timestamp   | YES      | default now()                |
 
@@ -60,3 +63,7 @@ RULE: Treat like invariants. Do not change without Change Control.
 - 2026-04-07: Claude model ID updated to claude-sonnet-4-6 (was claude-sonnet-4-20250514).
 - 2026-04-07: last_meaningful_contact input changed to date picker (ISO YYYY-MM-DD format).
 - 2026-04-07: GET /api/contacts now accepts ?id= param to return a single contact.
+- 2026-04-08: Signal layer added — signals table, /api/signal, /signal page.
+- 2026-04-08: contact_quality (int 1-3), follow_up (bool), follow_up_note (text) added to contacts.
+- 2026-04-08: LinkedIn import auto-detected by first_name+last_name+connected_on headers.
+- 2026-04-08: youtube-transcript + @mozilla/readability added for URL content extraction.
