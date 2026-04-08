@@ -136,7 +136,11 @@ Return JSON with optional fields (omit irrelevant ones):
   const { data: filtered } = await q;
 
   let candidates: Contact[] = filtered || [];
-  if (candidates.length < 5) {
+
+  // Only fall back to all contacts when no location filter was applied —
+  // otherwise Berlin and Doha bleed into a "who do I know in London" query.
+  const has_location_filter = !!(filters.city || filters.country);
+  if (!has_location_filter && candidates.length < 5) {
     const { data: all } = await supabase.from("contacts").select("*");
     if (all) {
       const ids = new Set(candidates.map((c) => c.id));
@@ -144,6 +148,14 @@ Return JSON with optional fields (omit irrelevant ones):
     }
   }
   if (candidates.length === 0) return { type: "contacts", results: [] };
+
+  // Build a filter summary so the ranker knows to enforce location constraints
+  const filter_lines = [
+    filters.city ? `- City: ${filters.city} (only return contacts in this city)` : "",
+    filters.country ? `- Country: ${filters.country} (only return contacts in this country)` : "",
+    filters.relationship_strength ? `- Relationship strength: ${filters.relationship_strength}` : "",
+    filters.topics?.length ? `- Topics: ${filters.topics.join(", ")}` : "",
+  ].filter(Boolean).join("\n");
 
   // Step 3: rank
   const rank_res = await anthropic.messages.create({
@@ -154,13 +166,14 @@ Return JSON with optional fields (omit irrelevant ones):
       content: `You are a personal network assistant. Rank these contacts by relevance to the query.
 
 Query: "${input}"
-
+${filter_lines ? `\nActive filters (enforce strictly):\n${filter_lines}\n` : ""}
 Contacts: ${JSON.stringify(candidates, null, 2)}
 
 RANKING RULES:
 - contact_quality 3 = real relationship, prefer strongly
 - contact_quality 1 = noise, surface last
 - follow_up = true, surface prominently for reconnect queries
+- If a location filter is active, ONLY include contacts who match that location
 
 Return ONLY a valid JSON array, up to 10 results:
 [{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "relationship_strength": "...", "how_you_know_them": "...", "topics": [...], "last_meaningful_contact": "...", "notes": "...", "follow_up": false, "follow_up_note": "...", "relevance": "one sentence why relevant" }]`,
