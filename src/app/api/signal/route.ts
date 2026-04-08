@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { YoutubeTranscript } from "youtube-transcript";
-import { Readability } from "@mozilla/readability";
-import { JSDOM } from "jsdom";
 import { getSupabase } from "@/lib/supabase";
 import { Signal } from "@/lib/types";
 
@@ -36,30 +34,27 @@ async function fetch_youtube_transcript(video_id: string): Promise<string | null
   }
 }
 
-// Fetches an article URL and extracts readable text via Mozilla Readability
+// Fetches an article via Jina Reader — handles JS-heavy sites, returns clean markdown
 async function fetch_article(url: string): Promise<{ title: string | null; text: string } | null> {
   try {
-    const res = await fetch(url, {
-      headers: {
-        // Mimic a browser so paywalls/bot-blockers don't reject us
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-      signal: AbortSignal.timeout(10000), // 10s timeout
+    const jina_url = `https://r.jina.ai/${url}`;
+    const res = await fetch(jina_url, {
+      headers: { "Accept": "text/plain" },
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) return null;
 
-    const html = await res.text();
-    const dom = new JSDOM(html, { url });
-    const reader = new Readability(dom.window.document);
-    const article = reader.parse();
+    const raw = await res.text();
+    if (!raw || raw.length < 100) return null;
 
-    if (!article || !article.textContent) return null;
+    // Jina returns "Title: ...\nURL: ...\n\n[content]" — extract title if present
+    const title_match = raw.match(/^Title:\s*(.+)/m);
+    const title = title_match ? title_match[1].trim() : null;
 
-    // Trim to ~8000 chars to avoid token overload
-    const text = article.textContent.replace(/\s+/g, " ").trim().slice(0, 8000);
-    return { title: article.title || null, text };
+    // Trim to ~8000 chars to stay within Claude token budget
+    const text = raw.slice(0, 8000);
+    return { title, text };
   } catch {
     return null;
   }
