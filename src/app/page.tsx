@@ -55,7 +55,7 @@ export default function Home() {
       </div>
 
       {/* ── Single input ─────────────────────────────────────────────── */}
-      <form onSubmit={handleSubmit} className="mb-8">
+      <form onSubmit={handleSubmit} className="mb-6">
         <textarea
           value={input}
           onChange={(e) => { setInput(e.target.value); if (result) setResult(null); }}
@@ -69,28 +69,35 @@ export default function Home() {
           rows={3}
           className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-zinc-300 resize-none"
         />
-        <div className="flex items-center justify-between mt-3">
-          <div className="flex flex-wrap gap-2">
-            {EXAMPLES.slice(0, 3).map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                onClick={() => setInput(ex)}
-                className="text-xs px-3 py-1.5 border border-zinc-200 rounded-full text-zinc-400 hover:text-zinc-700 hover:border-zinc-400"
-              >
-                {ex}
-              </button>
-            ))}
-          </div>
+        <div className="flex justify-end mt-3">
           <button
             type="submit"
             disabled={loading || !input.trim()}
-            className="px-6 py-2.5 bg-zinc-900 text-white rounded-lg text-sm font-medium hover:bg-zinc-700 disabled:opacity-50 flex-shrink-0"
+            className="px-6 py-2.5 bg-zinc-900 text-white rounded-lg text-sm font-medium hover:bg-zinc-700 disabled:opacity-50"
           >
             {loading ? "Thinking..." : "Go"}
           </button>
         </div>
       </form>
+
+      {/* ── Examples ─────────────────────────────────────────────────── */}
+      {!result && (
+        <div className="mb-8">
+          <p className="text-xs text-zinc-400 mb-2">Try</p>
+          <div className="space-y-1.5">
+            {EXAMPLES.slice(0, 3).map((ex) => (
+              <button
+                key={ex}
+                type="button"
+                onClick={() => setInput(ex)}
+                className="block w-full text-left text-sm text-zinc-400 hover:text-zinc-700 px-3 py-2 rounded-lg hover:bg-zinc-50 border border-transparent hover:border-zinc-200"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Results ──────────────────────────────────────────────────── */}
       {result && (
