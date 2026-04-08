@@ -1,8 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const supabase = getSupabase();
+  const id = request.nextUrl.searchParams.get("id");
+
+  if (id) {
+    // Single contact by ID
+    const { data, error } = await supabase
+      .from("contacts")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 404 });
+    }
+    return NextResponse.json(data);
+  }
+
+  // All contacts
   const { data, error } = await supabase
     .from("contacts")
     .select("*")

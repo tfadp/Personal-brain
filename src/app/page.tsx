@@ -23,18 +23,15 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!query.trim()) return;
-
+  async function runQuery(text: string) {
+    if (!text.trim()) return;
     setLoading(true);
     setSearched(true);
-
     try {
       const res = await fetch("/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query: text }),
       });
       const data = await res.json();
       setResults(data.results || []);
@@ -45,6 +42,11 @@ export default function Home() {
     }
   }
 
+  async function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    await runQuery(query);
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-6 py-16">
       <div className="mb-12">
@@ -52,6 +54,27 @@ export default function Home() {
         <p className="text-zinc-500">
           Query your network in natural language.
         </p>
+      </div>
+
+      {/* Preset queries — one click to populate and run */}
+      <div className="flex gap-2 mb-4">
+        {[
+          "Who haven't I spoken to in a while?",
+          "Who are my strongest connections?",
+          "Who do I know in venture capital?",
+        ].map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            onClick={() => {
+              setQuery(preset);
+              runQuery(preset);
+            }}
+            className="text-xs px-3 py-1.5 border border-zinc-200 rounded-full text-zinc-500 hover:border-zinc-400 hover:text-zinc-800"
+          >
+            {preset}
+          </button>
+        ))}
       </div>
 
       <form onSubmit={handleSearch} className="mb-10">
