@@ -29,9 +29,9 @@ Yesterday's date: ${new Date(Date.now() - 86400000).toISOString().split("T")[0]}
 
 Return JSON with:
 {
-  "contact_name": "the name of the person to update",
+  "contact_name": "the name of the person to update — just the name, ignore phone numbers, emails, or other details",
   "updates": {
-    "notes": "new or appended note text (only if mentioned)",
+    "notes": "if a phone number, email, or other contact detail is included, save it as a note. Also save any other note text mentioned.",
     "last_meaningful_contact": "YYYY-MM-DD (only if mentioned or if user says 'today'/'yesterday')",
     "relationship_strength": "strong|medium|light (only if mentioned)",
     "contact_quality": 1|2|3 (only if mentioned — 3=real relationship, 2=weak tie, 1=noise),
@@ -47,10 +47,14 @@ Only include fields in "updates" that are explicitly mentioned. Omit the rest en
       ],
     });
 
-    const parseText =
+    const parseRaw =
       parseResponse.content[0].type === "text"
         ? parseResponse.content[0].text
         : "";
+    const parseText = parseRaw
+      .replace(/^```[a-z]*\n?/i, "")
+      .replace(/\n?```$/i, "")
+      .trim();
 
     let parsed: {
       contact_name: string;
