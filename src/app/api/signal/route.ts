@@ -15,6 +15,35 @@ function is_url(text: string): boolean {
   }
 }
 
+// Extracts YouTube video ID from any URL format
+function extract_youtube_id(url: string): string | null {
+  const match = url.match(
+    /(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/
+  );
+  return match ? match[1] : null;
+}
+
+// Fetches YouTube transcript via Supadata API (works from cloud IPs)
+async function fetch_youtube_transcript(video_id: string): Promise<string | null> {
+  const api_key = process.env.SUPADATA_API_KEY;
+  if (!api_key) return null;
+
+  try {
+    const res = await fetch(
+      `https://api.supadata.ai/v1/youtube/transcript?videoId=${video_id}&text=true`,
+      {
+        headers: { "x-api-key": api_key },
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    // Supadata returns { content: "full transcript text", ... }
+    return data.content ?? data.transcript ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // Fetches an article via Jina Reader — handles JS-heavy sites, returns clean markdown
 async function fetch_article(url: string): Promise<{ title: string | null; text: string } | null> {
@@ -53,8 +82,25 @@ async function enrich_input(raw: string): Promise<{ content: string; source_url:
 
   const video_id = extract_youtube_id(trimmed);
 
-  // All URLs — YouTube and articles — go through Jina Reader
-  // (youtube-transcript is blocked by YouTube on cloud IPs like Vercel)
+  // YouTube: use Supadata API (works from cloud IPs, Jina doesn't get transcripts)
+  const video_id = extract_youtube_id(trimmed);
+  if (video_id) {
+    const transcript = await fetch_youtube_transcript(video_id);
+    if (transcript) {
+      return {
+        content: `YouTube video URL: ${trimmed}\n\nTranscript:\n${transcript}`,
+        source_url: trimmed,
+        source_title: null,
+      };
+    }
+    return {
+      content: `YouTube video URL: ${trimmed}\n\n(Transcript unavailable — video may be private or have captions disabled.)`,
+      source_url: trimmed,
+      source_title: null,
+    };
+  }
+
+  // Articles and all other URLs go through Jina Reader
   const article = await fetch_article(trimmed);
   if (article) {
     return {
