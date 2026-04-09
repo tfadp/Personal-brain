@@ -1,26 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { getSupabase } from "@/lib/supabase";
-import { Contact } from "@/lib/types";
+import { apply_contact_update, UpdatePayload } from "@/lib/contact_update";
 
 const anthropic = new Anthropic();
 
 export async function POST(request: NextRequest) {
   try {
-    const { command } = await request.json();
-
-    if (!command) {
-      return NextResponse.json({ error: "Command is required" }, { status: 400 });
+    const body = await request.json().catch(() => null);
+    if (!body) {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
 
-    // Step 1: Ask Claude to parse the command into a structured update
-    const parseResponse = await anthropic.messages.create({
+    const { command } = body;
+    if (!command?.trim()) {
+      return NextResponse.json({ error: "command is required" }, { status: 400 });
+    }
+    if (command.length > 2000) {
+      return NextResponse.json({ error: "Command too long (max 2000 characters)" }, { status: 400 });
+    }
+
+    const parse_res = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 512,
-      messages: [
-        {
-          role: "user",
-          content: `You are a personal CRM assistant. Parse this natural language update command and return ONLY valid JSON, no other text.
+      messages: [{
+        role: "user",
+        content: `You are a personal CRM assistant. Parse this natural language update command and return ONLY valid JSON, no other text.
 
 Command: "${command}"
 
@@ -43,27 +47,15 @@ Return JSON with:
 }
 
 Only include fields in "updates" that are explicitly mentioned. Omit the rest entirely.`,
-        },
-      ],
+      }],
     });
 
-    const parseRaw =
-      parseResponse.content[0].type === "text"
-        ? parseResponse.content[0].text
-        : "";
-    const parseText = parseRaw
-      .replace(/^```[a-z]*\n?/i, "")
-      .replace(/\n?```$/i, "")
-      .trim();
+    const raw = parse_res.content[0].type === "text" ? parse_res.content[0].text : "";
+    const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
 
-    let parsed: {
-      contact_name: string;
-      updates: Partial<Contact> & { topics?: string[] };
-      action: string;
-    };
-
+    let parsed: { contact_name: string; updates: UpdatePayload; action: string };
     try {
-      parsed = JSON.parse(parseText);
+      parsed = JSON.parse(clean);
     } catch {
       return NextResponse.json(
         { error: "Could not understand that command. Try: 'add note to [name] — [text]'" },
@@ -78,63 +70,38 @@ Only include fields in "updates" that are explicitly mentioned. Omit the rest en
       );
     }
 
-    // Step 2: Find the contact by name (fuzzy — ilike)
-    const supabase = getSupabase();
-    const { data: matches } = await supabase
-      .from("contacts")
-      .select("*")
-      .ilike("name", `%${parsed.contact_name}%`);
-
-    if (!matches || matches.length === 0) {
+    // Validate enum values if present
+    if (parsed.updates.relationship_strength &&
+        !["strong", "medium", "light"].includes(parsed.updates.relationship_strength)) {
       return NextResponse.json(
-        { error: `No contact found matching "${parsed.contact_name}".` },
-        { status: 404 }
+        { error: "relationship_strength must be 'strong', 'medium', or 'light'" },
+        { status: 400 }
+      );
+    }
+    if (parsed.updates.contact_quality !== undefined && parsed.updates.contact_quality !== null &&
+        ![1, 2, 3].includes(parsed.updates.contact_quality)) {
+      return NextResponse.json(
+        { error: "contact_quality must be 1, 2, or 3" },
+        { status: 400 }
       );
     }
 
-    // Use the closest name match
-    const contact: Contact = matches[0];
+    const result = await apply_contact_update(parsed.contact_name, parsed.updates, parsed.action);
 
-    // Step 3: Merge updates — topics are additive, not replaced
-    const final_updates: Partial<Contact> = { ...parsed.updates };
-
-    if (parsed.updates.topics && parsed.updates.topics.length > 0) {
-      const existing = contact.topics ?? [];
-      const merged = Array.from(new Set([...existing, ...parsed.updates.topics]));
-      final_updates.topics = merged;
+    if (!result.ok && result.clarify) {
+      return NextResponse.json(
+        { error: `Multiple contacts match "${parsed.contact_name}". Did you mean one of these?`, candidates: result.candidates },
+        { status: 409 }
+      );
     }
 
-    // Append notes rather than replace
-    if (parsed.updates.notes) {
-      const existing_notes = contact.notes ?? "";
-      const date_prefix = new Date().toISOString().split("T")[0];
-      final_updates.notes = existing_notes
-        ? `${existing_notes}\n[${date_prefix}] ${parsed.updates.notes}`
-        : `[${date_prefix}] ${parsed.updates.notes}`;
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: 404 });
     }
 
-    // Step 4: Apply the update
-    const { data: updated, error } = await supabase
-      .from("contacts")
-      .update({ ...final_updates, updated_at: new Date().toISOString() })
-      .eq("id", contact.id)
-      .select()
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-
-    return NextResponse.json({
-      success: true,
-      action: parsed.action,
-      contact: updated,
-    });
+    return NextResponse.json({ success: true, action: result.action, contact: result.contact });
   } catch (err) {
     console.error("Update error:", err);
-    return NextResponse.json(
-      { error: "Update failed", details: String(err) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Update failed", details: String(err) }, { status: 500 });
   }
 }
