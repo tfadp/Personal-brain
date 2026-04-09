@@ -413,10 +413,24 @@ If it is not a text/messaging screenshot, return:
     return { type: "error", message: "That doesn't look like a text conversation screenshot." };
   }
 
+  // No match — create them from the screenshot instead of erroring
   if (!parsed.contact_id) {
+    const { data, error } = await getSupabase()
+      .from("contacts")
+      .insert({
+        name: parsed.contact_name,
+        last_meaningful_contact: parsed.last_meaningful_contact,
+        how_you_know_them: "Text conversation",
+        follow_up: false,
+      })
+      .select()
+      .single();
+
+    if (error) return { type: "error", message: error.message };
     return {
-      type: "error",
-      message: `Found a conversation with "${parsed.contact_name}" but they're not in Cortex. Add them first.`,
+      type: "added",
+      action: `Added ${data.name} — last text ${parsed.last_meaningful_contact}`,
+      contact: data,
     };
   }
 
