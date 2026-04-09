@@ -73,7 +73,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    const text = await file.text();
+    const raw = await file.text();
+
+    // LinkedIn exports start with a "Notes:" comment block before the real headers.
+    // Find the first line that looks like a CSV header row and strip everything above it.
+    const lines = raw.split("\n");
+    const header_index = lines.findIndex((line) =>
+      line.trim().match(/^(first.name|name|first_name)/i)
+    );
+    const text = header_index > 0 ? lines.slice(header_index).join("\n") : raw;
+
     const { data, errors } = Papa.parse(text, {
       header: true,
       skipEmptyLines: true,
