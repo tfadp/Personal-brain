@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { getSupabase } from "@/lib/supabase";
 import { Signal } from "@/lib/types";
 
@@ -142,12 +143,12 @@ async function ingest_pdf(file_data: string, file_name: string, context?: string
               media_type: "application/pdf",
               data: file_data,
             },
-          } as Parameters<typeof anthropic.messages.create>[0]["messages"][0]["content"][0],
+          } as ContentBlockParam,
           {
             type: "text",
             text: EXTRACT_PROMPT(context),
           },
-        ],
+        ] as ContentBlockParam[],
       },
     ],
   });

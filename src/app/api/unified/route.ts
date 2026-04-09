@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { getSupabase } from "@/lib/supabase";
 import { Contact, Signal } from "@/lib/types";
 
@@ -368,7 +369,7 @@ async function handle_screenshot(file_data: string, file_type: string) {
         {
           type: "image",
           source: { type: "base64", media_type, data: file_data },
-        } as Parameters<typeof anthropic.messages.create>[0]["messages"][0]["content"][0],
+        } as ContentBlockParam,
         {
           type: "text",
           text: `Look at this screenshot. If it shows a text/iMessage/WhatsApp conversation:
@@ -388,7 +389,7 @@ Return ONLY valid JSON:
 If it is not a text/messaging screenshot, return:
 { "is_text_screenshot": false }`,
         },
-      ],
+      ] as ContentBlockParam[],
     }],
   });
 
