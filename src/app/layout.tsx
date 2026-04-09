@@ -24,6 +24,9 @@ export default function RootLayout({
               <Link href="/contacts" className="hover:text-zinc-900">
                 Contacts
               </Link>
+              <Link href="/rank" className="hover:text-zinc-900">
+                Rank
+              </Link>
               <Link href="/import" className="hover:text-zinc-900">
                 Import
               </Link>
