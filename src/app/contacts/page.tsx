@@ -21,11 +21,20 @@ const EMPTY_DRAFT = {
   follow_up_note: "",
 };
 
-function QualityStars({ value }: { value: number | null }) {
-  if (!value) return null;
+function QualityStars({ value, onChange }: { value: number | null; onChange?: (v: number | null) => void }) {
+  // Cycles: null→1→2→3→null on each tap
+  function handleTap(star: number) {
+    if (!onChange) return;
+    onChange(value === star ? (star === 1 ? null : star - 1) : star);
+  }
   return (
-    <span className="text-xs text-zinc-400" title={`Quality: ${value}/3`}>
-      {"★".repeat(value)}{"☆".repeat(3 - value)}
+    <span className={`text-base leading-none ${onChange ? "cursor-pointer" : ""}`} title="Tap to rate">
+      {[1, 2, 3].map((s) => (
+        <span key={s} onClick={() => handleTap(s)}
+          className={(value ?? 0) >= s ? "text-amber-400" : "text-zinc-300"}>
+          ★
+        </span>
+      ))}
     </span>
   );
 }
@@ -148,6 +157,16 @@ export default function ContactsPage() {
   }
 
   // ── Quick follow-up toggle ───────────────────────────────────────────────
+
+  async function setQuality(contact: Contact, value: number | null) {
+    const res = await fetch("/api/contacts", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: contact.id, contact_quality: value }),
+    });
+    const updated: Contact = await res.json();
+    setContacts((prev) => prev.map((c) => (c.id === contact.id ? updated : c)));
+  }
 
   async function toggleFollowUp(contact: Contact) {
     const updated_follow_up = !contact.follow_up;
@@ -452,7 +471,7 @@ export default function ContactsPage() {
                         follow up
                       </span>
                     )}
-                    <QualityStars value={contact.contact_quality} />
+                    <QualityStars value={contact.contact_quality} onChange={(v) => setQuality(contact, v)} />
                   </div>
                   <p className="text-sm text-zinc-600">
                     {[contact.role, contact.company].filter(Boolean).join(" at ")}
