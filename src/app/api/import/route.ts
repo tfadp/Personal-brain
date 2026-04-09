@@ -81,15 +81,13 @@ export async function POST(request: NextRequest) {
         header.trim().toLowerCase().replace(/\s+/g, "_"),
     });
 
-    if (errors.length > 0) {
+    // Only abort if we got no data at all — minor parse errors (unescaped quotes,
+    // trailing commas in notes fields) are common in LinkedIn exports and shouldn't block the import
+    if (!data || data.length === 0) {
       return NextResponse.json(
-        { error: "CSV parsing errors", details: errors },
+        { error: "CSV is empty or could not be parsed", details: errors },
         { status: 400 }
       );
-    }
-
-    if (!data || data.length === 0) {
-      return NextResponse.json({ error: "CSV is empty" }, { status: 400 });
     }
 
     const csv_headers = Object.keys(data[0] as Record<string, string>);
