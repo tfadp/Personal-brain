@@ -437,33 +437,67 @@ If it is not a text/messaging screenshot, return:
   };
 }
 
-// ── Main route ───────────────────────────────────────────────────────────────
+// ── Main route — SSE streaming ───────────────────────────────────────────────
+
+const INTENT_STATUS: Record<string, string> = {
+  query_contacts: "Searching your contacts...",
+  query_signals:  "Searching your brain...",
+  ingest_signal:  "Saving to your brain...",
+  update_contact: "Updating contact...",
+  add_contact:    "Adding contact...",
+};
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { file_data, file_type } = body;
+  const encoder = new TextEncoder();
 
-    // Image screenshot path
-    if (file_data && file_type?.startsWith("image/")) {
-      return NextResponse.json(await handle_screenshot(file_data, file_type));
-    }
+  const body = await request.json().catch(() => ({}));
 
-    const { input } = body;
-    if (!input?.trim()) return NextResponse.json({ error: "Nothing to process" }, { status: 400 });
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: object) =>
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
 
-    const { intent } = await classify_intent(input);
+      try {
+        const { file_data, file_type, input } = body;
 
-    switch (intent) {
-      case "query_contacts":  return NextResponse.json(await handle_query_contacts(input));
-      case "query_signals":   return NextResponse.json(await handle_query_signals(input));
-      case "ingest_signal":   return NextResponse.json(await handle_ingest_signal(input));
-      case "update_contact":  return NextResponse.json(await handle_update_contact(input));
-      case "add_contact":     return NextResponse.json(await handle_add_contact(input));
-      default:                return NextResponse.json({ type: "error", message: "Could not understand that." });
-    }
-  } catch (err) {
-    console.error("Unified route error:", err);
-    return NextResponse.json({ error: "Something went wrong", details: String(err) }, { status: 500 });
-  }
+        // Screenshot path
+        if (file_data && file_type?.startsWith("image/")) {
+          send({ type: "status", message: "Reading screenshot..." });
+          send(await handle_screenshot(file_data, file_type));
+          return;
+        }
+
+        if (!input?.trim()) {
+          send({ type: "error", message: "Nothing to process" });
+          return;
+        }
+
+        send({ type: "status", message: "Thinking..." });
+        const { intent } = await classify_intent(input);
+        send({ type: "status", message: INTENT_STATUS[intent] ?? "Working..." });
+
+        switch (intent) {
+          case "query_contacts": send(await handle_query_contacts(input)); break;
+          case "query_signals":  send(await handle_query_signals(input)); break;
+          case "ingest_signal":  send(await handle_ingest_signal(input)); break;
+          case "update_contact": send(await handle_update_contact(input)); break;
+          case "add_contact":    send(await handle_add_contact(input)); break;
+          default: send({ type: "error", message: "Could not understand that." });
+        }
+      } catch (err) {
+        console.error("Unified route error:", err);
+        send({ type: "error", message: "Something went wrong. Try again." });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

@@ -21,6 +21,7 @@ const EXAMPLES = [
 export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
   const [result, setResult] = useState<ResultType | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -37,6 +38,7 @@ export default function Home() {
     e.preventDefault();
     if (!input.trim() && !attachedFile) return;
     setLoading(true);
+    setStatus("Thinking...");
     setResult(null);
     try {
       let body: Record<string, string | undefined>;
@@ -62,14 +64,40 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
-      setResult(data);
+
+      // Read SSE stream — status messages arrive first, result arrives last
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? ""; // keep incomplete last line
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === "status") {
+              setStatus(data.message);
+            } else {
+              setResult(data);
+              setStatus(null);
+            }
+          } catch { /* partial chunk */ }
+        }
+      }
+
       setInput("");
       setAttachedFile(null);
     } catch {
       setResult({ type: "error", message: "Something went wrong. Try again." });
+      setStatus(null);
     } finally {
       setLoading(false);
+      setStatus(null);
     }
   }
 
@@ -151,6 +179,11 @@ export default function Home() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* ── Status ───────────────────────────────────────────────────── */}
+      {status && (
+        <p className="text-sm text-zinc-400 text-center py-4 animate-pulse">{status}</p>
       )}
 
       {/* ── Results ──────────────────────────────────────────────────── */}
