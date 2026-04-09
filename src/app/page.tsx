@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Contact, Signal } from "@/lib/types";
 
 type ResultType =
@@ -22,21 +22,50 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ResultType | null>(null);
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file) return;
+    setAttachedFile(file);
+    if (result) setResult(null);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() && !attachedFile) return;
     setLoading(true);
     setResult(null);
     try {
+      let body: Record<string, string | undefined>;
+
+      if (attachedFile) {
+        const file_data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve((reader.result as string).split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(attachedFile);
+        });
+        body = {
+          file_data,
+          file_type: attachedFile.type || "image/jpeg",
+          file_name: attachedFile.name,
+        };
+      } else {
+        body = { input };
+      }
+
       const res = await fetch("/api/unified", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       setResult(data);
       setInput("");
+      setAttachedFile(null);
     } catch {
       setResult({ type: "error", message: "Something went wrong. Try again." });
     } finally {
@@ -69,10 +98,35 @@ export default function Home() {
           rows={3}
           className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-zinc-300 resize-none"
         />
-        <div className="flex justify-end mt-3">
+
+        {/* Attached screenshot pill */}
+        {attachedFile && (
+          <div className="flex items-center gap-2 mt-2 px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg">
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <span className="text-sm text-zinc-700 flex-1 truncate">{attachedFile.name}</span>
+            <button type="button" onClick={() => setAttachedFile(null)} className="text-zinc-400 hover:text-zinc-700 text-lg leading-none">&times;</button>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between mt-3">
+          <div>
+            <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-700 border border-zinc-200 hover:border-zinc-400 px-3 py-1.5 rounded-lg"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Screenshot
+            </button>
+          </div>
           <button
             type="submit"
-            disabled={loading || !input.trim()}
+            disabled={loading || (!input.trim() && !attachedFile)}
             className="px-6 py-2.5 bg-zinc-900 text-white rounded-lg text-sm font-medium hover:bg-zinc-700 disabled:opacity-50"
           >
             {loading ? "Thinking..." : "Go"}

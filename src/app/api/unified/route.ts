@@ -372,11 +372,119 @@ Return:
   return { type: "added", contact: data };
 }
 
+// ── Screenshot handler ───────────────────────────────────────────────────────
+
+function normalize_image_type(file_type: string): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
+  if (file_type.includes("png")) return "image/png";
+  if (file_type.includes("gif")) return "image/gif";
+  if (file_type.includes("webp")) return "image/webp";
+  return "image/jpeg"; // covers jpg, heic (iOS converts to jpeg on upload)
+}
+
+async function handle_screenshot(file_data: string, file_type: string) {
+  const media_type = normalize_image_type(file_type);
+
+  // Get contacts for matching
+  const { data: contacts } = await getSupabase()
+    .from("contacts")
+    .select("id, name, email")
+    .order("name");
+
+  if (!contacts || contacts.length === 0) {
+    return { type: "error", message: "No contacts to match against." };
+  }
+
+  const res = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 512,
+    messages: [{
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: { type: "base64", media_type, data: file_data },
+        } as Parameters<typeof anthropic.messages.create>[0]["messages"][0]["content"][0],
+        {
+          type: "text",
+          text: `Look at this screenshot. If it shows a text/iMessage/WhatsApp conversation:
+1. Find the contact's name (shown at the top of the conversation)
+2. Find the most recent message date
+3. Match the name to this contacts list (fuzzy match — "Jon" can match "Jonathan Smith"):
+${JSON.stringify(contacts.map(c => ({ id: c.id, name: c.name })), null, 2)}
+
+Return ONLY valid JSON:
+{
+  "is_text_screenshot": true,
+  "contact_id": "matched uuid or null if no match",
+  "contact_name": "name as shown in screenshot",
+  "last_meaningful_contact": "YYYY-MM-DD"
+}
+
+If it is not a text/messaging screenshot, return:
+{ "is_text_screenshot": false }`,
+        },
+      ],
+    }],
+  });
+
+  const raw = res.content[0].type === "text" ? res.content[0].text : "{}";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+
+  let parsed: {
+    is_text_screenshot: boolean;
+    contact_id: string | null;
+    contact_name: string;
+    last_meaningful_contact: string;
+  };
+
+  try {
+    parsed = JSON.parse(clean);
+  } catch {
+    return { type: "error", message: "Could not read that screenshot." };
+  }
+
+  if (!parsed.is_text_screenshot) {
+    return { type: "error", message: "That doesn't look like a text conversation screenshot." };
+  }
+
+  if (!parsed.contact_id) {
+    return {
+      type: "error",
+      message: `Found a conversation with "${parsed.contact_name}" but they're not in Cortex. Add them first.`,
+    };
+  }
+
+  const { data, error } = await getSupabase()
+    .from("contacts")
+    .update({
+      last_meaningful_contact: parsed.last_meaningful_contact,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", parsed.contact_id)
+    .select()
+    .single();
+
+  if (error) return { type: "error", message: error.message };
+  return {
+    type: "updated",
+    action: `Updated ${data.name} — last text ${parsed.last_meaningful_contact}`,
+    contact: data,
+  };
+}
+
 // ── Main route ───────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
   try {
-    const { input } = await request.json();
+    const body = await request.json();
+    const { file_data, file_type } = body;
+
+    // Image screenshot path
+    if (file_data && file_type?.startsWith("image/")) {
+      return NextResponse.json(await handle_screenshot(file_data, file_type));
+    }
+
+    const { input } = body;
     if (!input?.trim()) return NextResponse.json({ error: "Nothing to process" }, { status: 400 });
 
     const { intent } = await classify_intent(input);
