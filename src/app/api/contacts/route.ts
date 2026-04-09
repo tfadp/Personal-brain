@@ -19,11 +19,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(data);
   }
 
-  // All contacts
+  // All contacts — raise limit beyond Supabase's 1000-row default
   const { data, error } = await supabase
     .from("contacts")
     .select("*")
-    .order("name");
+    .order("name")
+    .limit(5000);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
