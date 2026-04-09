@@ -3,7 +3,8 @@
 **Date:** April 9, 2026  
 **Live app:** personal-brain-two.vercel.app  
 **Repo:** github.com/tfadp/Personal-brain  
-**Branch:** `main` (all changes are here, Vercel deploys from this)
+**Branch:** `main` (all changes are here, Vercel deploys from this)  
+**Note:** `main` didn't exist at the start of this session — work was done on `claude/check-last-github-push-p7kPw` and then `main` was created from it. The other open branch `claude/import-cortex-contacts-U7I4o` is stale and can be deleted.
 
 ---
 
