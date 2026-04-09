@@ -14,44 +14,54 @@ type Intent =
   | "update_contact"
   | "add_contact";
 
-async function classify_intent(input: string): Promise<{ intent: Intent; reasoning: string }> {
+// Fast heuristic — handles the obvious cases without a Claude round-trip.
+// Returns null when uncertain so we fall back to Claude.
+function fast_intent(input: string): Intent | null {
+  const t = input.toLowerCase().trim();
+
+  // Standalone URL → always ingest
+  if (/^https?:\/\/\S+$/.test(input.trim())) return "ingest_signal";
+
+  // Contact search
+  if (/\bwho (do i know|should i meet|to (meet|see|talk|catch up))\b/.test(t)) return "query_contacts";
+  if (/\b(i('m| am)|i've) (going|headed|traveling|flying) to\b/.test(t)) return "query_contacts";
+  if (/\b(find|show me|list) (contacts?|people|someone|connections?)\b/.test(t)) return "query_contacts";
+
+  // Knowledge search
+  if (/\bwhat (do i know about|have i (saved|read)|did i save)\b/.test(t)) return "query_signals";
+  if (/\bwhat.{0,30}\b(saved|in my brain)\b/.test(t)) return "query_signals";
+
+  // Contact updates
+  if (/\bfollow.?up with\b/.test(t)) return "update_contact";
+  if (/\b(just (met|spoke|talked|texted|emailed|called)|caught up with)\b/.test(t)) return "update_contact";
+
+  // Add contact
+  if (/\b(add|new) contact\b/.test(t)) return "add_contact";
+
+  return null; // uncertain — ask Claude
+}
+
+async function classify_intent(input: string): Promise<{ intent: Intent }> {
+  // Try heuristics first — instant, no API call
+  const quick = fast_intent(input);
+  if (quick) return { intent: quick };
+
   const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 256,
-    messages: [
-      {
-        role: "user",
-        content: `You are routing input to the correct handler in a personal brain app.
+    max_tokens: 64,
+    messages: [{
+      role: "user",
+      content: `Classify this input for a personal contacts + knowledge app. Return ONLY one of these exact strings:
+query_contacts | query_signals | ingest_signal | update_contact | add_contact
 
-Input: "${input}"
-
-Classify the intent as exactly one of:
-- query_contacts: searching for people (e.g. "who do I know in...", "find contacts who...", "who should I talk to about...")
-- query_signals: searching saved knowledge (e.g. "what do I know about...", "what have I saved on...", "find articles about...")
-- ingest_signal: saving new knowledge — a URL, article text, newsletter, idea, or anything to be digested and stored
-- update_contact: updating an existing contact (follow up, add note, change strength, mark catch up)
-- add_contact: creating a new contact (has a name + some details like role, company, phone)
-
-Return ONLY valid JSON:
-{ "intent": "one of the 5 values above", "reasoning": "one sentence" }`,
-      },
-    ],
+Input: "${input}"`,
+    }],
   });
 
-  const raw = res.content[0].type === "text" ? res.content[0].text : "{}";
-  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  const raw = res.content[0].type === "text" ? res.content[0].text.trim() : "";
   const VALID_INTENTS: Intent[] = ["query_contacts", "query_signals", "ingest_signal", "update_contact", "add_contact"];
-  try {
-    const parsed = JSON.parse(clean);
-    // Guard: if Claude returns an unknown intent, fall back to ingest — least destructive
-    if (!VALID_INTENTS.includes(parsed.intent)) {
-      return { intent: "ingest_signal", reasoning: "fallback — invalid intent returned" };
-    }
-    return parsed;
-  } catch {
-    // Default to signal ingest if classification fails — least destructive
-    return { intent: "ingest_signal", reasoning: "fallback" };
-  }
+  const matched = VALID_INTENTS.find(i => raw.includes(i));
+  return { intent: matched ?? "ingest_signal" };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -107,83 +117,38 @@ async function fetch_url_content(url: string): Promise<{ title: string | null; t
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 async function handle_query_contacts(input: string) {
-  // Step 1: extract filters
-  const filter_res = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 512,
-    messages: [{
-      role: "user",
-      content: `Extract search filters from this query about a personal contacts database. Return ONLY valid JSON.
+  // Fetch all contacts in one shot — Claude does filtering + ranking in the
+  // same call, saving a full round-trip vs the old extract-filters → rank pattern.
+  const { data: contacts } = await getSupabase().from("contacts").select("*").order("name");
+  if (!contacts || contacts.length === 0) return { type: "contacts", results: [] };
 
-Query: "${input}"
-
-Return JSON with optional fields (omit irrelevant ones):
-{ "city": "...", "country": "...", "topics": [...], "relationship_strength": "strong|medium|light", "intent": "..." }`,
-    }],
-  });
-
-  const filter_raw = filter_res.content[0].type === "text" ? filter_res.content[0].text : "{}";
-  const filter_clean = filter_raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  let filters: { city?: string; country?: string; topics?: string[]; relationship_strength?: string; intent?: string } = {};
-  try { filters = JSON.parse(filter_clean); } catch { filters = { intent: input }; }
-
-  // Step 2: pull candidates
-  const supabase = getSupabase();
-  let q = supabase.from("contacts").select("*");
-  if (filters.city) q = q.ilike("city", `%${filters.city}%`);
-  if (filters.country) q = q.ilike("country", `%${filters.country}%`);
-  if (filters.relationship_strength) q = q.eq("relationship_strength", filters.relationship_strength);
-  const { data: filtered } = await q;
-
-  let candidates: Contact[] = filtered || [];
-
-  // Only fall back to all contacts when no location filter was applied —
-  // otherwise Berlin and Doha bleed into a "who do I know in London" query.
-  const has_location_filter = !!(filters.city || filters.country);
-  if (!has_location_filter && candidates.length < 5) {
-    const { data: all } = await supabase.from("contacts").select("*");
-    if (all) {
-      const ids = new Set(candidates.map((c) => c.id));
-      candidates = [...candidates, ...all.filter((c: Contact) => !ids.has(c.id))];
-    }
-  }
-  if (candidates.length === 0) return { type: "contacts", results: [] };
-
-  // Build a filter summary so the ranker knows to enforce location constraints
-  const filter_lines = [
-    filters.city ? `- City: ${filters.city} (only return contacts in this city)` : "",
-    filters.country ? `- Country: ${filters.country} (only return contacts in this country)` : "",
-    filters.relationship_strength ? `- Relationship strength: ${filters.relationship_strength}` : "",
-    filters.topics?.length ? `- Topics: ${filters.topics.join(", ")}` : "",
-  ].filter(Boolean).join("\n");
-
-  // Step 3: rank
-  const rank_res = await anthropic.messages.create({
+  const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2048,
     messages: [{
       role: "user",
-      content: `You are a personal network assistant. Rank these contacts by relevance to the query.
+      content: `You are a personal network assistant. Find and rank the most relevant contacts for this query.
 
 Query: "${input}"
-${filter_lines ? `\nActive filters (enforce strictly):\n${filter_lines}\n` : ""}
-Contacts: ${JSON.stringify(candidates, null, 2)}
 
-RANKING RULES:
-- contact_quality 3 = real relationship, prefer strongly
-- contact_quality 1 = noise, surface last
-- follow_up = true, surface prominently for reconnect queries
-- If a location filter is active, ONLY include contacts who match that location
+RULES:
+- If the query mentions a specific city or country, ONLY return contacts in that location
+- contact_quality 3 = real relationship, prefer strongly; contact_quality 1 = noise, surface last
+- follow_up = true contacts should be surfaced prominently for reconnect queries
+- Return an empty array if no contacts genuinely match
+
+Contacts:
+${JSON.stringify(contacts, null, 2)}
 
 Return ONLY a valid JSON array, up to 10 results:
 [{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "relationship_strength": "...", "how_you_know_them": "...", "topics": [...], "last_meaningful_contact": "...", "notes": "...", "follow_up": false, "follow_up_note": "...", "relevance": "one sentence why relevant" }]`,
     }],
   });
 
-  const rank_raw = rank_res.content[0].type === "text" ? rank_res.content[0].text : "[]";
-  const rank_clean = rank_raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  const raw = res.content[0].type === "text" ? res.content[0].text : "[]";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
   let results = [];
-  try { results = JSON.parse(rank_clean); } catch { const m = rank_clean.match(/\[[\s\S]*\]/); results = m ? JSON.parse(m[0]) : []; }
+  try { results = JSON.parse(clean); } catch { const m = clean.match(/\[[\s\S]*\]/); results = m ? JSON.parse(m[0]) : []; }
   return { type: "contacts", results };
 }
 
