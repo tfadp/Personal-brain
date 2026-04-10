@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { Contact } from "@/lib/types";
 
 const EMPTY_DRAFT = {
@@ -53,12 +54,44 @@ export default function ContactsPage() {
   const [addDraft, setAddDraft] = useState({ ...EMPTY_DRAFT });
   const [adding, setAdding] = useState(false);
 
+  const searchParams = useSearchParams();
+
+  const openEdit = useCallback((contact: Contact) => {
+    setEditingId(contact.id);
+    setEditDraft({
+      name: contact.name,
+      role: contact.role ?? "",
+      company: contact.company ?? "",
+      city: contact.city ?? "",
+      country: contact.country ?? "",
+      email: contact.email ?? "",
+      linkedin_url: contact.linkedin_url ?? "",
+      how_you_know_them: contact.how_you_know_them ?? "",
+      last_meaningful_contact: contact.last_meaningful_contact ?? "",
+      relationship_strength: contact.relationship_strength ?? "",
+      contact_quality: contact.contact_quality ?? undefined,
+      topics: contact.topics ?? [],
+      notes: contact.notes ?? "",
+      follow_up: contact.follow_up ?? false,
+      follow_up_note: contact.follow_up_note ?? "",
+    });
+  }, []);
+
   useEffect(() => {
     fetch("/api/contacts")
       .then((res) => res.json())
-      .then((data) => { setContacts(data); setLoading(false); })
+      .then((data: Contact[]) => {
+        setContacts(data);
+        setLoading(false);
+        // Open edit form if ?edit=<id> was passed from search results
+        const edit_id = searchParams.get("edit");
+        if (edit_id) {
+          const target = data.find((c) => c.id === edit_id);
+          if (target) openEdit(target);
+        }
+      })
       .catch(() => setLoading(false));
-  }, []);
+  }, [searchParams, openEdit]);
 
   const filtered = contacts.filter((c) => {
     if (showFollowUpOnly && !c.follow_up) return false;

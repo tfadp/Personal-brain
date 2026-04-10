@@ -130,15 +130,15 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
       const term = p.extract(m);
       // For city searches, expand aliases (e.g. "los angeles" → also search "la")
       const terms = p.field === "city" ? expand_city(term) : [term.toLowerCase()];
-      const filters = terms.flatMap((t) => [
-        `city.ilike.%${t}%`,
-        `country.ilike.%${t}%`,
+      const filters = terms.flatMap((alias) => [
+        `city.ilike.%${alias}%`,
+        `country.ilike.%${alias}%`,
       ]);
       const { data } = await supabase
         .from("contacts")
         .select(SLIM_FIELDS)
         .or(filters.join(","))
-        .order("contact_quality", { ascending: false })
+        .order("contact_quality", { ascending: false, nullsFirst: false })
         .limit(50);
       if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
     }
@@ -151,17 +151,25 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
         .from("contacts")
         .select(SLIM_FIELDS)
         .ilike("role", `%${term}%`)
-        .order("contact_quality", { ascending: false })
+        .order("contact_quality", { ascending: false, nullsFirst: false })
         .limit(50);
       if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
     }
   }
 
   // Topic keyword match — "who do I know in sports media"
+  // Use a generous stop-word list so generic query words don't produce spurious matches
+  const TOPIC_STOP_WORDS = new Set([
+    "know", "people", "contacts", "should", "meets", "finds", "shows", "lists",
+    "about", "early", "stage", "invest", "someone", "reach", "today", "email",
+    "call", "there", "their", "where", "which", "think", "need", "want", "like",
+    "some", "good", "best", "great", "help", "tell", "give", "make", "take",
+    "follow", "ping", "remind", "catch", "meet", "talk", "text", "message",
+  ]);
   const topic_words = t
     .replace(/[^a-z0-9 ]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 4 && !new Set(["know", "people", "contacts", "should", "meets", "finds", "shows", "lists", "about", "early", "stage", "invest", "someone"]).has(w));
+    .filter((w) => w.length > 4 && !TOPIC_STOP_WORDS.has(w));
 
   if (topic_words.length > 0) {
     // Use Postgres array overlap — topics is text[]
@@ -169,7 +177,7 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
       .from("contacts")
       .select(SLIM_FIELDS)
       .overlaps("topics", topic_words)
-      .order("contact_quality", { ascending: false })
+      .order("contact_quality", { ascending: false, nullsFirst: false })
       .limit(50);
     if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
   }
@@ -401,12 +409,16 @@ Only include fields explicitly mentioned.`,
   let parsed: { contact_name: string; updates: UpdatePayload; action: string };
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not understand that command." }; }
 
-  // If the raw input clearly signals follow-up intent, enforce it — don't trust Claude to infer it
+  // Enforce follow-up flag regardless of Claude's parse — don't trust inference for data mutations
   if (/\bfollow.?up\b|\breach out\b|\bping\b|\bneed to (call|email|text)\b/i.test(input)) {
     parsed.updates.follow_up = true;
     if (!parsed.updates.follow_up_note) {
       parsed.updates.follow_up_note = input;
     }
+  } else if (/\b(done|spoke|talked|called|texted|emailed|caught up|followed up|clear follow.?up|remove follow.?up)\b/i.test(input)) {
+    // Clear the follow-up flag when user says they've done it
+    parsed.updates.follow_up = false;
+    parsed.updates.follow_up_note = undefined;
   }
 
   const result = await apply_contact_update(parsed.contact_name, parsed.updates, parsed.action);
@@ -481,10 +493,12 @@ function normalize_image_type(file_type: string): "image/jpeg" | "image/png" | "
 async function handle_screenshot(file_data: string, file_type: string, caption?: string) {
   const media_type = normalize_image_type(file_type);
 
+  // Limit to 500 — Claude can fuzzy match within this set; full table is wasteful
   const { data: contacts } = await getSupabase()
     .from("contacts")
     .select("id, name, email")
-    .order("name");
+    .order("name")
+    .limit(500);
 
   if (!contacts || contacts.length === 0) {
     return { type: "error", message: "No contacts to match against." };

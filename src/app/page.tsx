@@ -8,7 +8,8 @@ type ResultType =
   | { type: "signals"; results: (Signal & { relevance?: string })[] }
   | { type: "ingested"; signal: Signal }
   | { type: "updated"; action: string; contact: Contact }
-  | { type: "added"; contact: Contact }
+  | { type: "added"; action?: string; contact: Contact }
+  | { type: "clarify"; message: string; candidates: Pick<Contact, "id" | "name" | "company" | "city">[] }
   | { type: "error"; message: string };
 
 const EXAMPLES = [
@@ -221,10 +222,36 @@ export default function Home() {
           {/* Added contact */}
           {result.type === "added" && (
             <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg">
-              <p className="text-zinc-700 text-sm font-medium">✓ Added {result.contact.name}</p>
-              <p className="text-zinc-500 text-sm">
-                {[result.contact.role, result.contact.company].filter(Boolean).join(" at ")}
-              </p>
+              <p className="text-zinc-700 text-sm font-medium">✓ {result.action ?? `Added ${result.contact.name}`}</p>
+              {(result.contact.role || result.contact.company) && (
+                <p className="text-zinc-500 text-sm">
+                  {[result.contact.role, result.contact.company].filter(Boolean).join(" at ")}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Clarify — multiple contacts matched */}
+          {result.type === "clarify" && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <p className="text-amber-800 text-sm font-medium mb-3">{result.message}</p>
+              <div className="space-y-2">
+                {result.candidates.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setInput(`follow up with ${c.name}`)}
+                    className="block w-full text-left px-3 py-2 bg-white border border-amber-200 rounded-lg text-sm hover:border-amber-400"
+                  >
+                    <span className="font-medium">{c.name}</span>
+                    {(c.company || c.city) && (
+                      <span className="text-zinc-400 ml-2">
+                        {[c.company, c.city].filter(Boolean).join(", ")}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -254,13 +281,21 @@ export default function Home() {
                         </p>
                       )}
                     </div>
-                    <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap flex-shrink-0 ${
-                      c.relationship_strength === "strong" ? "bg-green-100 text-green-700"
-                      : c.relationship_strength === "medium" ? "bg-yellow-100 text-yellow-700"
-                      : "bg-zinc-100 text-zinc-500"
-                    }`}>
-                      {c.relationship_strength || "—"}
-                    </span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${
+                        c.relationship_strength === "strong" ? "bg-green-100 text-green-700"
+                        : c.relationship_strength === "medium" ? "bg-yellow-100 text-yellow-700"
+                        : "bg-zinc-100 text-zinc-500"
+                      }`}>
+                        {c.relationship_strength || "—"}
+                      </span>
+                      <a
+                        href={`/contacts?edit=${c.id}`}
+                        className="text-xs text-zinc-400 hover:text-zinc-700 border border-zinc-200 hover:border-zinc-400 px-2 py-1 rounded"
+                      >
+                        Edit
+                      </a>
+                    </div>
                   </div>
                   {c.follow_up_note && (
                     <p className="text-xs text-amber-700 mt-1.5 italic">↳ {c.follow_up_note}</p>

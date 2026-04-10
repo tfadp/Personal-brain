@@ -53,3 +53,14 @@ create index if not exists idx_contacts_company_trgm on contacts using gin (comp
 create index if not exists idx_contacts_role_trgm    on contacts using gin (role gin_trgm_ops);
 create index if not exists idx_contacts_city_trgm    on contacts using gin (city gin_trgm_ops);
 create index if not exists idx_contacts_country_trgm on contacts using gin (country gin_trgm_ops);
+
+-- ── One-time city normalization (run manually in Supabase SQL editor) ─────────
+-- Normalises common abbreviations so location queries return consistent results.
+-- Preview first with SELECT before running the UPDATEs.
+--
+-- UPDATE contacts SET city = 'New York'    WHERE lower(city) IN ('nyc', 'ny', 'new york city');
+-- UPDATE contacts SET city = 'Los Angeles' WHERE lower(city) IN ('la', 'l.a.');
+-- UPDATE contacts SET city = 'San Francisco' WHERE lower(city) IN ('sf', 's.f.');
+-- UPDATE contacts SET city = 'Washington'  WHERE lower(city) IN ('dc', 'd.c.', 'washington dc', 'washington d.c.');
+-- UPDATE contacts SET city = 'London'      WHERE lower(city) IN ('london, uk', 'london, england');
+-- UPDATE contacts SET city = 'Chicago'     WHERE lower(city) IN ('chi');

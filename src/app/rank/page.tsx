@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { Contact } from "@/lib/types";
 
@@ -10,6 +10,7 @@ export default function RankPage() {
   const [rated_count, setRatedCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/contacts")
@@ -25,24 +26,48 @@ export default function RankPage() {
 
   const current = queue[0] ?? null;
 
-  async function rate(value: number) {
+  const rate = useCallback(async (value: number) => {
     if (!current || saving) return;
     setSaving(true);
-    await fetch("/api/contacts", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: current.id, contact_quality: value }),
-    });
-    setSaving(false);
-    setRatedCount((n) => n + 1);
-    setQueue((q) => q.slice(1));
-  }
+    setError(null);
+    try {
+      const res = await fetch("/api/contacts", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: current.id, contact_quality: value }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? "Failed to save rating. Try again.");
+        setSaving(false);
+        return;
+      }
+      setRatedCount((n) => n + 1);
+      setQueue((q) => q.slice(1));
+    } catch {
+      setError("Network error. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }, [current, saving]);
 
-  function skip() {
+  const skip = useCallback(() => {
     if (!current) return;
-    // Move current to the end of the queue
     setQueue((q) => [...q.slice(1), q[0]]);
-  }
+  }, [current]);
+
+  // Keyboard shortcuts: 1/2/3 to rate, s or → to skip
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "1") rate(1);
+      if (e.key === "2") rate(2);
+      if (e.key === "3") rate(3);
+      if (e.key === "s" || e.key === "ArrowRight") skip();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [rate, skip]);
 
   if (loading) {
     return (
@@ -67,14 +92,12 @@ export default function RankPage() {
     );
   }
 
-  const remaining = queue.length;
-
   return (
     <div className="max-w-md mx-auto px-6 py-12">
       {/* Progress */}
       <div className="flex items-center justify-between mb-8 text-sm text-zinc-400">
         <span>{rated_count} rated this session</span>
-        <span>{remaining} remaining</span>
+        <span>{queue.length} of {total_unrated} remaining</span>
       </div>
 
       {/* Card */}
@@ -105,7 +128,7 @@ export default function RankPage() {
               onClick={() => rate(s)}
               disabled={saving}
               className="text-5xl leading-none transition-transform active:scale-90 disabled:opacity-40"
-              title={s === 1 ? "Noise" : s === 2 ? "Acquaintance" : "Real relationship"}
+              title={s === 1 ? "1 — Noise" : s === 2 ? "2 — Acquaintance" : "3 — Real relationship"}
             >
               <span className="text-zinc-200 hover:text-amber-400">★</span>
             </button>
@@ -113,6 +136,8 @@ export default function RankPage() {
         </div>
 
         <p className="text-xs text-zinc-400 mb-6">1 = noise · 2 = acquaintance · 3 = real relationship</p>
+
+        {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
 
         <button
           onClick={skip}
@@ -123,8 +148,9 @@ export default function RankPage() {
         </button>
       </div>
 
-      {/* Quick keyboard hint */}
-      <p className="text-center text-xs text-zinc-300 mt-6">Tap a star to rate and advance</p>
+      <p className="text-center text-xs text-zinc-300 mt-6">
+        Tap a star or press <kbd className="font-mono">1</kbd> <kbd className="font-mono">2</kbd> <kbd className="font-mono">3</kbd> · <kbd className="font-mono">S</kbd> to skip
+      </p>
     </div>
   );
 }
