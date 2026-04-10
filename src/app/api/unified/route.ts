@@ -335,7 +335,7 @@ function normalize_image_type(file_type: string): "image/jpeg" | "image/png" | "
   return "image/jpeg";
 }
 
-async function handle_screenshot(file_data: string, file_type: string) {
+async function handle_screenshot(file_data: string, file_type: string, caption?: string) {
   const media_type = normalize_image_type(file_type);
 
   const { data: contacts } = await getSupabase()
@@ -393,8 +393,14 @@ If it is not a text/messaging screenshot, return:
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not read that screenshot." }; }
 
   if (!parsed.is_text_screenshot) {
-    return { type: "error", message: "That doesn't look like a text conversation screenshot." };
+    // Not a messaging screenshot — treat the caption as context if provided
+    return { type: "error", message: caption
+      ? `Not a text conversation screenshot. If you meant to add a contact, try: "add contact [name] [details]"`
+      : "That doesn't look like a text conversation screenshot." };
   }
+
+  // Detect follow-up intent from the caption the user typed alongside the screenshot
+  const wants_follow_up = /follow.?up|reach out|ping|remind/i.test(caption ?? "");
 
   // No match — create the contact from the screenshot
   if (!parsed.contact_id) {
@@ -404,24 +410,40 @@ If it is not a text/messaging screenshot, return:
         name: parsed.contact_name,
         last_meaningful_contact: parsed.last_meaningful_contact,
         how_you_know_them: "Text conversation",
-        follow_up: false,
+        follow_up: wants_follow_up,
+        follow_up_note: wants_follow_up ? (caption ?? null) : null,
       })
       .select()
       .single();
 
     if (error) return { type: "error", message: error.message };
-    return { type: "added", action: `Added ${data.name} — last text ${parsed.last_meaningful_contact}`, contact: data };
+    const action = wants_follow_up
+      ? `Added ${data.name} and marked for follow-up`
+      : `Added ${data.name} — last text ${parsed.last_meaningful_contact}`;
+    return { type: "added", action, contact: data };
+  }
+
+  const patch: Record<string, unknown> = {
+    last_meaningful_contact: parsed.last_meaningful_contact,
+    updated_at: new Date().toISOString(),
+  };
+  if (wants_follow_up) {
+    patch.follow_up = true;
+    patch.follow_up_note = caption ?? null;
   }
 
   const { data, error } = await getSupabase()
     .from("contacts")
-    .update({ last_meaningful_contact: parsed.last_meaningful_contact, updated_at: new Date().toISOString() })
+    .update(patch)
     .eq("id", parsed.contact_id)
     .select()
     .single();
 
   if (error) return { type: "error", message: error.message };
-  return { type: "updated", action: `Updated ${data.name} — last text ${parsed.last_meaningful_contact}`, contact: data };
+  const action = wants_follow_up
+    ? `Updated ${data.name} and marked for follow-up`
+    : `Updated ${data.name} — last text ${parsed.last_meaningful_contact}`;
+  return { type: "updated", action, contact: data };
 }
 
 // ── Main route — SSE streaming ───────────────────────────────────────────────
@@ -462,7 +484,7 @@ export async function POST(request: NextRequest) {
       try {
         if (file_data && file_type?.startsWith("image/")) {
           send({ type: "status", message: "Reading screenshot..." });
-          send(await handle_screenshot(file_data, file_type));
+          send(await handle_screenshot(file_data, file_type, input?.trim()));
           return;
         }
 
