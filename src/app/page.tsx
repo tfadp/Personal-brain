@@ -25,6 +25,7 @@ export default function Home() {
   const [status, setStatus] = useState<string | null>(null);
   const [result, setResult] = useState<ResultType | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [pending_input, setPendingInput] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -91,8 +92,48 @@ export default function Home() {
         }
       }
 
+      setPendingInput(input);
       setInput("");
       setAttachedFile(null);
+    } catch {
+      setResult({ type: "error", message: "Something went wrong. Try again." });
+      setStatus(null);
+    } finally {
+      setLoading(false);
+      setStatus(null);
+    }
+  }
+
+  async function handleClarifySelect(contact_id: string) {
+    if (!pending_input) return;
+    setLoading(true);
+    setStatus("Updating contact...");
+    setResult(null);
+    try {
+      const res = await fetch("/api/unified", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: pending_input, contact_id }),
+      });
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === "status") { setStatus(data.message); }
+            else { setResult(data); setStatus(null); }
+          } catch { /* partial chunk */ }
+        }
+      }
+      setPendingInput("");
     } catch {
       setResult({ type: "error", message: "Something went wrong. Try again." });
       setStatus(null);
@@ -240,7 +281,7 @@ export default function Home() {
                   <button
                     key={c.id}
                     type="button"
-                    onClick={() => setInput(`follow up with ${c.name}`)}
+                    onClick={() => handleClarifySelect(c.id)}
                     className="block w-full text-left px-3 py-2 bg-white border border-amber-200 rounded-lg text-sm hover:border-amber-400"
                   >
                     <span className="font-medium">{c.name}</span>

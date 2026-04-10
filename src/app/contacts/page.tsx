@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Contact } from "@/lib/types";
 
@@ -40,7 +40,7 @@ function QualityStars({ value, onChange }: { value: number | null; onChange?: (v
   );
 }
 
-export default function ContactsPage() {
+function ContactsPageInner() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -581,5 +581,13 @@ export default function ContactsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function ContactsPage() {
+  return (
+    <Suspense>
+      <ContactsPageInner />
+    </Suspense>
   );
 }

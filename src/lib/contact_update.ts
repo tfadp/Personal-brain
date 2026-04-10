@@ -12,6 +12,51 @@ export type UpdateResult =
   | { ok: false; clarify: false; error: string };
 
 /**
+ * Apply a contact update by exact ID — used after the user resolves a clarify prompt.
+ * Same merge logic as apply_contact_update (topics additive, notes appended).
+ */
+export async function apply_contact_update_by_id(
+  contact_id: string,
+  updates: UpdatePayload,
+  action: string,
+): Promise<UpdateResult> {
+  const supabase = getSupabase();
+
+  const { data: contact, error: fetch_error } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("id", contact_id)
+    .single();
+
+  if (fetch_error || !contact) {
+    return { ok: false, clarify: false, error: "Contact not found." };
+  }
+
+  const final: Partial<Contact> = { ...updates };
+
+  if (updates.topics && updates.topics.length > 0) {
+    final.topics = Array.from(new Set([...(contact.topics ?? []), ...updates.topics]));
+  }
+
+  if (updates.notes) {
+    const prefix = new Date().toISOString().split("T")[0];
+    final.notes = contact.notes
+      ? `${contact.notes}\n[${prefix}] ${updates.notes}`
+      : `[${prefix}] ${updates.notes}`;
+  }
+
+  const { data: updated, error } = await supabase
+    .from("contacts")
+    .update({ ...final, updated_at: new Date().toISOString() })
+    .eq("id", contact_id)
+    .select()
+    .single();
+
+  if (error) return { ok: false, clarify: false, error: error.message };
+  return { ok: true, contact: updated, action };
+}
+
+/**
  * Find, merge, and apply a contact update by name.
  *
  * - If multiple contacts match, returns clarify=true with candidates so the

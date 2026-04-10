@@ -4,7 +4,7 @@ import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { getSupabase } from "@/lib/supabase";
 import { Contact, Signal } from "@/lib/types";
 import { enrich_input } from "@/lib/enrich";
-import { apply_contact_update, UpdatePayload } from "@/lib/contact_update";
+import { apply_contact_update, apply_contact_update_by_id, UpdatePayload } from "@/lib/contact_update";
 
 const anthropic = new Anthropic();
 
@@ -374,7 +374,7 @@ Return:
   return { type: "ingested", signal: data };
 }
 
-async function handle_update_contact(input: string) {
+async function handle_update_contact(input: string, contact_id?: string) {
   const parse_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 512,
@@ -421,6 +421,13 @@ Only include fields explicitly mentioned.`,
     parsed.updates.follow_up_note = undefined;
   }
 
+  // If the caller already resolved a clarify prompt, apply directly by ID — skip name matching
+  if (contact_id) {
+    const result = await apply_contact_update_by_id(contact_id, parsed.updates, parsed.action);
+    if (!result.ok) return { type: "error", message: result.clarify ? "Unexpected clarify" : result.error };
+    return { type: "updated", action: result.action, contact: result.contact };
+  }
+
   const result = await apply_contact_update(parsed.contact_name, parsed.updates, parsed.action);
 
   if (!result.ok && result.clarify) {
@@ -463,6 +470,9 @@ Return:
     parsed.contact_quality = null;
   }
 
+  // Enforce follow-up intent from the raw input — don't rely on Claude to always include it
+  const wants_follow_up = /\bfollow.?up\b|\breach out\b|\bping\b/i.test(input);
+
   const { data, error } = await getSupabase().from("contacts").insert({
     name: parsed.name,
     role: parsed.role ?? null,
@@ -474,7 +484,8 @@ Return:
     notes: parsed.notes ?? null,
     relationship_strength: parsed.relationship_strength ?? null,
     how_you_know_them: parsed.how_you_know_them ?? null,
-    follow_up: false,
+    follow_up: wants_follow_up,
+    follow_up_note: wants_follow_up ? input : null,
   }).select().single();
 
   if (error) return { type: "error", message: error.message };
@@ -619,7 +630,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
 
   // Validate: must have either image or text input
-  const { file_data, file_type, input } = body;
+  const { file_data, file_type, input, contact_id } = body;
   if (!file_data && !input?.trim()) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", message: "Nothing to process" })}\n\n`,
@@ -653,7 +664,7 @@ export async function POST(request: NextRequest) {
           case "query_contacts": send(await handle_query_contacts(input)); break;
           case "query_signals":  send(await handle_query_signals(input)); break;
           case "ingest_signal":  send(await handle_ingest_signal(input)); break;
-          case "update_contact": send(await handle_update_contact(input)); break;
+          case "update_contact": send(await handle_update_contact(input, contact_id)); break;
           case "add_contact":    send(await handle_add_contact(input)); break;
           default: send({ type: "error", message: "Could not understand that." });
         }
