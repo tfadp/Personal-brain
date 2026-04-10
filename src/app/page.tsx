@@ -9,6 +9,7 @@ type ResultType =
   | { type: "ingested"; signal: Signal }
   | { type: "updated"; action: string; contact: Contact }
   | { type: "added"; action?: string; contact: Contact }
+  | { type: "added_bulk"; contacts: Contact[]; action: string }
   | { type: "clarify"; message: string; candidates: Pick<Contact, "id" | "name" | "company" | "city">[] }
   | { type: "error"; message: string };
 
@@ -269,6 +270,24 @@ export default function Home() {
                   {[result.contact.role, result.contact.company].filter(Boolean).join(" at ")}
                 </p>
               )}
+            </div>
+          )}
+
+          {/* Bulk added contacts */}
+          {result.type === "added_bulk" && (
+            <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg">
+              <p className="text-zinc-700 text-sm font-medium mb-3">✓ {result.action}</p>
+              <div className="space-y-1">
+                {result.contacts.map((c, i) => (
+                  <div key={c.id ?? i} className="flex items-baseline gap-2">
+                    <span className="text-sm text-zinc-800">{c.name}</span>
+                    {(c.role || c.company) && (
+                      <span className="text-xs text-zinc-400">{[c.role, c.company].filter(Boolean).join(" at ")}</span>
+                    )}
+                    {c.email && <span className="text-xs text-zinc-400">{c.email}</span>}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

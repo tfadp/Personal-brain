@@ -34,6 +34,9 @@ function fast_intent(input: string): Intent | null {
   if (/\bfollow.?up with\b/.test(t)) return "update_contact";
   if (/\b(just (met|spoke|talked|texted|emailed|called)|caught up with)\b/.test(t)) return "update_contact";
   if (/\b(add|new) contact\b/.test(t)) return "add_contact";
+  if (/\badd (them|these|all|contacts?)\b/.test(t)) return "add_contact";
+  // Pasted list: 2+ lines each containing an email address
+  if ((input.match(/\n/g) ?? []).length >= 1 && (input.match(/@\w+\.\w+/g) ?? []).length >= 2) return "add_contact";
   return null;
 }
 
@@ -441,55 +444,79 @@ Only include fields explicitly mentioned.`,
 }
 
 async function handle_add_contact(input: string) {
+  const today = new Date().toISOString().split("T")[0];
   const parse_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 512,
+    max_tokens: 2048,
     messages: [{
       role: "user",
-      content: `Extract contact details from this input. Return ONLY valid JSON.
+      content: `Extract contact details from this input. There may be one contact or many.
+Today is ${today}.
 
 Input: "${input}"
 
-Return:
-{ "name": "required", "role": "or null", "company": "or null", "city": "or null", "country": "or null", "email": "or null", "topics": ["if mentioned"], "notes": "any other details including phone number", "relationship_strength": "strong|medium|light or null", "how_you_know_them": "or null" }`,
+Return ONLY a valid JSON array (even for a single contact):
+[{
+  "name": "required",
+  "role": "or null",
+  "company": "or null",
+  "city": "or null",
+  "country": "or null",
+  "email": "or null",
+  "topics": [],
+  "notes": "phone or other details, or null",
+  "relationship_strength": "strong|medium|light or null",
+  "how_you_know_them": "or null",
+  "last_meaningful_contact": "YYYY-MM-DD if a date is mentioned near this person, else null"
+}]`,
     }],
   });
 
-  const raw = parse_res.content[0].type === "text" ? parse_res.content[0].text : "{}";
+  const raw = parse_res.content[0].type === "text" ? parse_res.content[0].text : "[]";
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  let parsed: Partial<Contact>;
+  let parsed: Partial<Contact>[];
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not parse contact details." }; }
-  if (!parsed.name) return { type: "error", message: "Could not identify a name." };
+  if (!Array.isArray(parsed) || parsed.length === 0) return { type: "error", message: "Could not identify any contacts." };
 
-  // Validate enums
-  if (parsed.relationship_strength && !["strong", "medium", "light"].includes(parsed.relationship_strength)) {
-    parsed.relationship_strength = null;
-  }
-  if (parsed.contact_quality !== undefined && parsed.contact_quality !== null &&
-      ![1, 2, 3].includes(parsed.contact_quality)) {
-    parsed.contact_quality = null;
-  }
-
-  // Enforce follow-up intent from the raw input — don't rely on Claude to always include it
   const wants_follow_up = /\bfollow.?up\b|\breach out\b|\bping\b/i.test(input);
 
-  const { data, error } = await getSupabase().from("contacts").insert({
-    name: parsed.name,
-    role: parsed.role ?? null,
-    company: parsed.company ?? null,
-    city: parsed.city ?? null,
-    country: parsed.country ?? null,
-    email: parsed.email ?? null,
-    topics: parsed.topics ?? null,
-    notes: parsed.notes ?? null,
-    relationship_strength: parsed.relationship_strength ?? null,
-    how_you_know_them: parsed.how_you_know_them ?? null,
-    follow_up: wants_follow_up,
-    follow_up_note: wants_follow_up ? input : null,
-  }).select().single();
+  const rows = parsed
+    .filter((p) => !!p.name)
+    .map((p) => {
+      // Validate enums per row
+      const strength = ["strong", "medium", "light"].includes(p.relationship_strength ?? "") ? p.relationship_strength : null;
+      const quality = [1, 2, 3].includes(p.contact_quality ?? 0) ? p.contact_quality : null;
+      return {
+        name: p.name!,
+        role: p.role ?? null,
+        company: p.company ?? null,
+        city: p.city ?? null,
+        country: p.country ?? null,
+        email: p.email ?? null,
+        topics: p.topics ?? null,
+        notes: p.notes ?? null,
+        relationship_strength: strength ?? null,
+        contact_quality: quality ?? null,
+        how_you_know_them: p.how_you_know_them ?? null,
+        last_meaningful_contact: p.last_meaningful_contact ?? null,
+        follow_up: wants_follow_up,
+        follow_up_note: wants_follow_up ? input : null,
+      };
+    });
 
+  if (rows.length === 0) return { type: "error", message: "Could not identify any names." };
+
+  const { data, error } = await getSupabase().from("contacts").insert(rows).select();
   if (error) return { type: "error", message: error.message };
-  return { type: "added", contact: data };
+
+  if (data.length === 1) {
+    return { type: "added", contact: data[0] };
+  }
+  return {
+    type: "added_bulk",
+    contacts: data,
+    action: `Added ${data.length} contacts`,
+  };
 }
 
 // ── Screenshot handler ───────────────────────────────────────────────────────
