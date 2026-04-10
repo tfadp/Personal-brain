@@ -33,9 +33,13 @@ function fast_intent(input: string): Intent | null {
   if (/\bwhat.{0,30}\b(saved|in my brain)\b/.test(t)) return "query_signals";
   if (/\bfollow.?up with\b/.test(t)) return "update_contact";
   if (/\b(just (met|spoke|talked|texted|emailed|called)|caught up with)\b/.test(t)) return "update_contact";
+  // Bulk update directives — must check before the email/list heuristics below
+  if (/\bmark (these|them|all|this)\b/.test(t)) return "update_contact";
+  if (/\b(set|add) follow.?up\b/.test(t)) return "update_contact";
+  if (/\b(clear|remove|done with) follow.?up\b/.test(t)) return "update_contact";
   if (/\b(add|new) contact\b/.test(t)) return "add_contact";
   if (/\badd (them|these|all|contacts?)\b/.test(t)) return "add_contact";
-  // Pasted list: 2+ lines each containing an email address
+  // Pasted list: 2+ lines each containing an email address (and no update directive above)
   if ((input.match(/\n/g) ?? []).length >= 1 && (input.match(/@\w+\.\w+/g) ?? []).length >= 2) return "add_contact";
   return null;
 }
@@ -377,7 +381,61 @@ Return:
   return { type: "ingested", signal: data };
 }
 
+async function handle_bulk_update(input: string) {
+  // Determine what update to apply from the directive in the input
+  const updates: UpdatePayload = {};
+  if (/follow.?up|mark|remind|reach out|ping/i.test(input)) {
+    updates.follow_up = true;
+    updates.follow_up_note = input.split("\n")[0].trim(); // use the directive line as context
+  } else if (/done|spoke|talked|called|caught up|followed up|clear|remove/i.test(input)) {
+    updates.follow_up = false;
+  }
+
+  // Ask Claude to pull just the names out of the list
+  const name_res = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 512,
+    messages: [{
+      role: "user",
+      content: `Extract only the person names from this input. Ignore email addresses, companies, dates, and instructions.
+
+Input: "${input}"
+
+Return ONLY a valid JSON array of name strings, e.g.: ["John Smith", "Jane Doe"]`,
+    }],
+  });
+
+  const raw = name_res.content[0].type === "text" ? name_res.content[0].text : "[]";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  let names: string[] = [];
+  try { names = JSON.parse(clean); } catch { return { type: "error", message: "Could not parse names from that input." }; }
+  if (!Array.isArray(names) || names.length === 0) return { type: "error", message: "Could not find any names to update." };
+
+  const updated: string[] = [];
+  const not_found: string[] = [];
+  const action = updates.follow_up === true ? "Marked for follow-up" : updates.follow_up === false ? "Cleared follow-up" : "Updated";
+
+  for (const name of names) {
+    const result = await apply_contact_update(name.trim(), updates, action);
+    if (result.ok) { updated.push(result.contact.name); }
+    else { not_found.push(name); }
+  }
+
+  const summary = [
+    updated.length > 0 ? `${action}: ${updated.length} contact${updated.length > 1 ? "s" : ""}` : null,
+    not_found.length > 0 ? `Not found: ${not_found.join(", ")}` : null,
+  ].filter(Boolean).join(" · ");
+
+  return { type: "updated_bulk", updated, not_found, action: summary };
+}
+
 async function handle_update_contact(input: string, contact_id?: string) {
+  // Bulk mode: 3+ non-empty lines = multiple contacts
+  const lines = input.trim().split(/\n+/).filter((s) => s.trim().length > 0);
+  if (lines.length >= 3) {
+    return await handle_bulk_update(input);
+  }
+
   const parse_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 512,

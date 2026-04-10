@@ -8,6 +8,7 @@ type ResultType =
   | { type: "signals"; results: (Signal & { relevance?: string })[] }
   | { type: "ingested"; signal: Signal }
   | { type: "updated"; action: string; contact: Contact }
+  | { type: "updated_bulk"; updated: string[]; not_found: string[]; action: string }
   | { type: "added"; action?: string; contact: Contact }
   | { type: "added_bulk"; contacts: Contact[]; action: string }
   | { type: "clarify"; message: string; candidates: Pick<Contact, "id" | "name" | "company" | "city">[] }
@@ -258,6 +259,16 @@ export default function Home() {
           {result.type === "updated" && (
             <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg">
               <p className="text-zinc-700 text-sm">✓ {result.action}</p>
+            </div>
+          )}
+
+          {/* Bulk updated contacts */}
+          {result.type === "updated_bulk" && (
+            <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg">
+              <p className="text-zinc-700 text-sm font-medium mb-2">✓ {result.action}</p>
+              {result.not_found.length > 0 && (
+                <p className="text-xs text-amber-600 mt-1">Not found: {result.not_found.join(", ")}</p>
+              )}
             </div>
           )}
 
