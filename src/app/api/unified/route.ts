@@ -57,60 +57,136 @@ Input: "${input}"`,
   return VALID_INTENTS.find((i) => raw.includes(i)) ?? "ingest_signal";
 }
 
-// ── Contact pre-filtering ────────────────────────────────────────────────────
+// ── Contact search ────────────────────────────────────────────────────────────
 
-// Stop words to skip when building keyword filters
-const STOP_WORDS = new Set([
-  "who", "what", "where", "when", "know", "with", "from", "that", "this",
-  "have", "they", "should", "meet", "find", "show", "list", "people", "about",
-  "like", "work", "works", "does",
-]);
+// Fields Claude needs for ranking — not the full row
+const SLIM_FIELDS = "id,name,company,role,city,country,contact_quality,topics,follow_up,follow_up_note";
+
+// Structured query patterns — these hit the DB directly, no Claude needed
+const STRUCTURED_PATTERNS: Array<{
+  pattern: RegExp;
+  field: "city" | "country" | "company" | "role";
+  extract: (m: RegExpMatchArray) => string;
+}> = [
+  { pattern: /\bin\s+([a-z][a-z\s]{1,30}?)(?:\?|$|\s+who|\s+that|\s+i)/i,  field: "city",    extract: (m) => m[1].trim() },
+  { pattern: /\bfrom\s+([a-z][a-z\s]{1,30}?)(?:\?|$|\s+who|\s+that)/i,     field: "country", extract: (m) => m[1].trim() },
+  { pattern: /\bat\s+([a-z][a-z\s]{1,30}?)(?:\?|$|\s+who|\s+that)/i,       field: "company", extract: (m) => m[1].trim() },
+  { pattern: /\bwork(?:s|ing)?\s+at\s+([a-z][a-z\s]{1,30}?)(?:\?|$)/i,    field: "company", extract: (m) => m[1].trim() },
+];
+
+// Role/industry keywords that map to a DB role search
+const ROLE_KEYWORDS: Record<string, string> = {
+  "investor": "investor",
+  "investors": "investor",
+  "vc": "venture",
+  "venture": "venture",
+  "lawyer": "lawyer",
+  "lawyers": "lawyer",
+  "attorney": "attorney",
+  "journalist": "journalist",
+  "reporter": "reporter",
+  "founder": "founder",
+  "ceo": "ceo",
+  "operator": "operator",
+};
+
+interface StructuredResult {
+  type: "direct";
+  results: Contact[];
+}
 
 /**
- * Pulls ≤200 candidate contacts from the DB using keyword pre-filtering.
- * Claude then ranks only this smaller set — not the full table.
- *
- * Strategy:
- * 1. Extract non-trivial keywords from the query (>3 chars, not stop words)
- * 2. OR-filter across name, company, city, country, role in Postgres
- * 3. If no keyword matches, fall back to 200 most-recently-updated contacts
+ * Try to answer the query directly from the DB without calling Claude.
+ * Returns null if the query is semantic and needs LLM ranking.
  */
-async function get_contact_candidates(input: string): Promise<Contact[]> {
+async function try_structured_query(input: string): Promise<StructuredResult | null> {
+  const supabase = getSupabase();
+  const t = input.toLowerCase();
+
+  // Location match — "who do I know in London"
+  for (const p of STRUCTURED_PATTERNS) {
+    const m = input.match(p.pattern);
+    if (m) {
+      const term = p.extract(m);
+      const { data } = await supabase
+        .from("contacts")
+        .select(SLIM_FIELDS)
+        .ilike(p.field, `%${term}%`)
+        .order("contact_quality", { ascending: false })
+        .limit(50);
+      if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
+    }
+  }
+
+  // Role/industry keyword match — "tell me all the lawyers I know"
+  for (const [keyword, term] of Object.entries(ROLE_KEYWORDS)) {
+    if (t.includes(keyword)) {
+      const { data } = await supabase
+        .from("contacts")
+        .select(SLIM_FIELDS)
+        .ilike("role", `%${term}%`)
+        .order("contact_quality", { ascending: false })
+        .limit(50);
+      if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
+    }
+  }
+
+  // Topic keyword match — "who do I know in sports media"
+  const topic_words = t
+    .replace(/[^a-z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 4 && !new Set(["know", "people", "contacts", "should", "meets", "finds", "shows", "lists", "about", "early", "stage", "invest", "someone"]).has(w));
+
+  if (topic_words.length > 0) {
+    // Use Postgres array overlap — topics is text[]
+    const { data } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .overlaps("topics", topic_words)
+      .order("contact_quality", { ascending: false })
+      .limit(50);
+    if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
+  }
+
+  return null;
+}
+
+/**
+ * Pulls ≤100 candidate contacts for semantic queries.
+ * Only called when try_structured_query returns null.
+ */
+async function get_semantic_candidates(input: string): Promise<Contact[]> {
   const supabase = getSupabase();
 
   const keywords = input
     .toLowerCase()
     .replace(/[^a-z0-9 ]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 3 && !STOP_WORDS.has(w))
-    .slice(0, 6);
+    .filter((w) => w.length > 3)
+    .slice(0, 5);
 
   if (keywords.length > 0) {
     const filters = keywords.flatMap((k) => [
       `name.ilike.%${k}%`,
       `company.ilike.%${k}%`,
       `city.ilike.%${k}%`,
-      `country.ilike.%${k}%`,
       `role.ilike.%${k}%`,
     ]);
-
     const { data } = await supabase
       .from("contacts")
-      .select("*")
+      .select(SLIM_FIELDS)
       .or(filters.join(","))
-      .limit(200);
-
+      .limit(100);
     if (data && data.length > 0) return data as Contact[];
   }
 
-  // Fallback — most recently updated 200
-  const { data: fallback } = await supabase
+  // True semantic fallback — recent 100, Claude will rank
+  const { data } = await supabase
     .from("contacts")
-    .select("*")
+    .select(SLIM_FIELDS)
     .order("updated_at", { ascending: false })
-    .limit(200);
-
-  return (fallback ?? []) as Contact[];
+    .limit(100);
+  return (data ?? []) as Contact[];
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -143,28 +219,35 @@ async function handle_query_contacts(input: string) {
     return { type: "contacts", results };
   }
 
-  const contacts = await get_contact_candidates(input);
-  if (contacts.length === 0) return { type: "contacts", results: [] };
+  // Try structured query first — DB only, no Claude
+  const structured = await try_structured_query(input);
+  if (structured) {
+    return { type: "contacts", results: structured.results };
+  }
+
+  // Semantic fallback — Claude ranks a slim candidate set
+  const candidates = await get_semantic_candidates(input);
+  if (candidates.length === 0) return { type: "contacts", results: [] };
 
   const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2048,
+    max_tokens: 1024,
     messages: [{
       role: "user",
-      content: `You are a personal network assistant. Find and rank the most relevant contacts for this query.
+      content: `You are a personal network assistant. Rank the most relevant contacts for this query.
 
 Query: "${input}"
 
 RULES:
-- If the query mentions a specific city or country, ONLY return contacts in that location
-- contact_quality 3 = real relationship, prefer strongly; contact_quality 1 = noise, surface last
+- contact_quality 3 = real relationship, prefer strongly; 1 = noise, surface last
 - Return an empty array if no contacts genuinely match
+- Return up to 10 results
 
 Contacts:
-${JSON.stringify(contacts, null, 2)}
+${JSON.stringify(candidates, null, 2)}
 
-Return ONLY a valid JSON array, up to 10 results:
-[{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "relationship_strength": "...", "how_you_know_them": "...", "topics": [...], "last_meaningful_contact": "...", "follow_up": false, "follow_up_note": "...", "relevance": "one sentence why relevant" }]`,
+Return ONLY a valid JSON array:
+[{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "contact_quality": 0, "topics": [], "follow_up": false, "relevance": "one sentence why relevant" }]`,
     }],
   });
 

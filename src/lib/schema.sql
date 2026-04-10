@@ -45,3 +45,11 @@ create index if not exists idx_contacts_quality  on contacts (contact_quality);
 create index if not exists idx_contacts_topics   on contacts using gin (topics);
 create index if not exists idx_signals_captured  on signals (captured_at desc);
 create index if not exists idx_signals_topics    on signals using gin (topics);
+
+-- Trigram indexes for fast ilike '%term%' searches
+-- Requires: CREATE EXTENSION IF NOT EXISTS pg_trgm;
+create index if not exists idx_contacts_name_trgm    on contacts using gin (name gin_trgm_ops);
+create index if not exists idx_contacts_company_trgm on contacts using gin (company gin_trgm_ops);
+create index if not exists idx_contacts_role_trgm    on contacts using gin (role gin_trgm_ops);
+create index if not exists idx_contacts_city_trgm    on contacts using gin (city gin_trgm_ops);
+create index if not exists idx_contacts_country_trgm on contacts using gin (country gin_trgm_ops);
