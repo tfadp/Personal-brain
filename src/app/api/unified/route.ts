@@ -33,10 +33,11 @@ function fast_intent(input: string): Intent | null {
   if (/\bwhat.{0,30}\b(saved|in my brain)\b/.test(t)) return "query_signals";
   if (/\bfollow.?up with\b/.test(t)) return "update_contact";
   if (/\b(just (met|spoke|talked|texted|emailed|called)|caught up with)\b/.test(t)) return "update_contact";
-  // Bulk update directives — must check before the email/list heuristics below
+  // Any mention of follow-up/marking in a multi-line input = bulk update, not add
+  // This must come before the email-list heuristic which would otherwise fire first
+  if (/follow.?up|mark for|remind me about|reach out/i.test(t) && (input.match(/\n/g) ?? []).length >= 1) return "update_contact";
   if (/\bmark (these|them|all|this)\b/.test(t)) return "update_contact";
-  if (/\b(set|add) follow.?up\b/.test(t)) return "update_contact";
-  if (/\b(clear|remove|done with) follow.?up\b/.test(t)) return "update_contact";
+  if (/\b(set|add|clear|remove|done with) follow.?up\b/.test(t)) return "update_contact";
   if (/\b(add|new) contact\b/.test(t)) return "add_contact";
   if (/\badd (them|these|all|contacts?)\b/.test(t)) return "add_contact";
   // Pasted list: 2+ lines each containing an email address (and no update directive above)
