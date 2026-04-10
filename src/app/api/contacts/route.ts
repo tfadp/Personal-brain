@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
+import { Contact } from "@/lib/types";
 
 const VALID_STRENGTHS = ["strong", "medium", "light"];
 const VALID_QUALITIES = [1, 2, 3];
@@ -30,15 +31,21 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(data);
   }
 
-  // All contacts — raise limit beyond Supabase's 1000-row default
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("*")
-    .order("name")
-    .limit(5000);
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  // Paginate to bypass Supabase's 1000-row PostgREST max-rows project setting
+  const PAGE = 1000;
+  let all: Contact[] = [];
+  for (let page = 0; ; page++) {
+    const { data: chunk, error } = await supabase
+      .from("contacts")
+      .select("*")
+      .order("name")
+      .range(page * PAGE, (page + 1) * PAGE - 1);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!chunk || chunk.length === 0) break;
+    all = all.concat(chunk);
+    if (chunk.length < PAGE) break;
+  }
+  return NextResponse.json(all);
 }
 
 export async function POST(request: NextRequest) {
