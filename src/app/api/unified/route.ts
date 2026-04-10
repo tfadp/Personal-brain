@@ -597,7 +597,7 @@ async function handle_bulk_update(input: string) {
   const updates: UpdatePayload = {};
   if (/follow.?up|mark|remind|reach out|ping/i.test(input)) {
     updates.follow_up = true;
-    updates.follow_up_note = input.split("\n")[0].trim(); // use the directive line as context
+    updates.follow_up_note = "Marked for follow-up";
   } else if (/done|spoke|talked|called|caught up|followed up|clear|remove/i.test(input)) {
     updates.follow_up = false;
   }
@@ -685,7 +685,7 @@ Only include fields explicitly mentioned.`,
   if (/\bfollow.?up\b|\breach out\b|\bping\b|\bneed to (call|email|text)\b/i.test(input)) {
     parsed.updates.follow_up = true;
     if (!parsed.updates.follow_up_note) {
-      parsed.updates.follow_up_note = input;
+      parsed.updates.follow_up_note = "Marked for follow-up";
     }
   } else if (/\b(done|spoke|talked|called|texted|emailed|caught up|followed up|clear follow.?up|remove follow.?up)\b/i.test(input)) {
     // Clear the follow-up flag when user says they've done it
@@ -767,7 +767,7 @@ Omit fields that are null — only include fields with actual values:
         how_you_know_them: p.how_you_know_them ?? null,
         last_meaningful_contact: p.last_meaningful_contact ?? null,
         follow_up: wants_follow_up,
-        follow_up_note: wants_follow_up ? input : null,
+        follow_up_note: wants_follow_up ? "Marked for follow-up" : null,
       };
     });
 
