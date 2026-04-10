@@ -394,7 +394,7 @@ async function handle_bulk_update(input: string) {
   // Ask Claude to pull just the names out of the list
   const name_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 512,
+    max_tokens: 1024,
     messages: [{
       role: "user",
       content: `Extract only the person names from this input. Ignore email addresses, companies, dates, and instructions.
@@ -505,7 +505,7 @@ async function handle_add_contact(input: string) {
   const today = new Date().toISOString().split("T")[0];
   const parse_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2048,
+    max_tokens: 8192,
     messages: [{
       role: "user",
       content: `Extract contact details from this input. There may be one contact or many.
@@ -513,27 +513,25 @@ Today is ${today}.
 
 Input: "${input}"
 
-Return ONLY a valid JSON array (even for a single contact):
-[{
-  "name": "required",
-  "role": "or null",
-  "company": "or null",
-  "city": "or null",
-  "country": "or null",
-  "email": "or null",
-  "topics": [],
-  "notes": "phone or other details, or null",
-  "relationship_strength": "strong|medium|light or null",
-  "how_you_know_them": "or null",
-  "last_meaningful_contact": "YYYY-MM-DD if a date is mentioned near this person, else null"
-}]`,
+Return ONLY a valid JSON array (even for a single contact).
+Omit fields that are null — only include fields with actual values:
+[{ "name": "required", "email": "if present", "role": "if present", "company": "if present", "city": "if present", "last_meaningful_contact": "YYYY-MM-DD if date mentioned" }]`,
     }],
   });
 
   const raw = parse_res.content[0].type === "text" ? parse_res.content[0].text : "[]";
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
   let parsed: Partial<Contact>[];
-  try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not parse contact details." }; }
+  try {
+    parsed = JSON.parse(clean);
+  } catch {
+    // Partial recovery: JSON may be truncated — extract every complete {...} object
+    const objects = [...clean.matchAll(/\{[^{}]+\}/g)].flatMap((m) => {
+      try { return [JSON.parse(m[0])]; } catch { return []; }
+    });
+    if (objects.length === 0) return { type: "error", message: "Could not parse contact details." };
+    parsed = objects;
+  }
   if (!Array.isArray(parsed) || parsed.length === 0) return { type: "error", message: "Could not identify any contacts." };
 
   const wants_follow_up = /\bfollow.?up\b|\breach out\b|\bping\b/i.test(input);
