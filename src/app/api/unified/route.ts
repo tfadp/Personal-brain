@@ -506,16 +506,34 @@ Return ONLY a valid JSON array (even for a single contact):
 
   if (rows.length === 0) return { type: "error", message: "Could not identify any names." };
 
-  const { data, error } = await getSupabase().from("contacts").insert(rows).select();
+  // Skip rows whose email already exists in the DB to avoid unique constraint errors
+  const emails_to_check = rows.map((r) => r.email).filter(Boolean) as string[];
+  let existing_emails = new Set<string>();
+  if (emails_to_check.length > 0) {
+    const { data: existing } = await getSupabase()
+      .from("contacts")
+      .select("email")
+      .in("email", emails_to_check);
+    existing_emails = new Set((existing ?? []).map((c: { email: string }) => c.email?.toLowerCase()));
+  }
+  const new_rows = rows.filter((r) => !r.email || !existing_emails.has(r.email.toLowerCase()));
+  const skipped = rows.length - new_rows.length;
+
+  if (new_rows.length === 0) {
+    return { type: "error", message: `All ${rows.length} contact${rows.length > 1 ? "s" : ""} already exist.` };
+  }
+
+  const { data, error } = await getSupabase().from("contacts").insert(new_rows).select();
   if (error) return { type: "error", message: error.message };
 
+  const skip_note = skipped > 0 ? ` (${skipped} already existed, skipped)` : "";
   if (data.length === 1) {
     return { type: "added", contact: data[0] };
   }
   return {
     type: "added_bulk",
     contacts: data,
-    action: `Added ${data.length} contacts`,
+    action: `Added ${data.length} contact${data.length > 1 ? "s" : ""}${skip_note}`,
   };
 }
 
