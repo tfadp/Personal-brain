@@ -9,6 +9,7 @@ type ResultType =
   | { type: "ingested"; signal: Signal }
   | { type: "updated"; action: string; contact: Contact }
   | { type: "updated_bulk"; updated: string[]; not_found: string[]; action: string }
+  | { type: "combined"; synthesis: string; signals: (Signal & { relevance?: string })[]; contacts: (Contact & { relevance?: string })[] }
   | { type: "added"; action?: string; contact: Contact }
   | { type: "added_bulk"; contacts: Contact[]; action: string }
   | { type: "clarify"; message: string; candidates: Pick<Contact, "id" | "name" | "company" | "city">[] }
@@ -323,6 +324,73 @@ export default function Home() {
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Combined research + contacts */}
+          {result.type === "combined" && (
+            <div className="space-y-6">
+              {/* Synthesis */}
+              <div className="p-4 bg-zinc-900 text-white rounded-lg">
+                <p className="text-xs text-zinc-400 uppercase tracking-wide mb-2">Synthesis</p>
+                <p className="text-sm leading-relaxed">{result.synthesis}</p>
+              </div>
+
+              {/* Relevant contacts */}
+              {result.contacts.length > 0 && (
+                <div>
+                  <p className="text-xs text-zinc-400 mb-3">People to talk to ({result.contacts.length})</p>
+                  <div className="space-y-2">
+                    {result.contacts.map((c, i) => (
+                      <div key={c.id || i} className={`border rounded-lg p-3 ${c.follow_up ? "border-amber-200 bg-amber-50/30" : "border-zinc-200"}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-sm">{c.name}</span>
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${c.contact_quality === 3 ? "bg-green-100 text-green-700" : c.contact_quality === 2 ? "bg-yellow-100 text-yellow-700" : "bg-zinc-100 text-zinc-400"}`}>
+                                {"★".repeat(c.contact_quality ?? 0) || "—"}
+                              </span>
+                            </div>
+                            <p className="text-xs text-zinc-500 mt-0.5">{[c.role, c.company].filter(Boolean).join(" at ")}</p>
+                            {c.relevance && <p className="text-xs text-zinc-600 mt-1 italic">{c.relevance}</p>}
+                          </div>
+                          <a href={`/contacts?edit=${c.id}`} className="text-xs text-zinc-400 hover:text-zinc-700 border border-zinc-200 hover:border-zinc-400 px-2 py-1 rounded flex-shrink-0">Edit</a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Relevant signals */}
+              {result.signals.length > 0 && (
+                <div>
+                  <p className="text-xs text-zinc-400 mb-3">From your research ({result.signals.length})</p>
+                  <div className="space-y-2">
+                    {result.signals.map((s) => (
+                      <div key={s.id} className="border border-zinc-200 rounded-lg p-3">
+                        <p className="text-sm text-zinc-900">{s.summary}</p>
+                        {s.topics && s.topics.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {s.topics.map((t) => (
+                              <span key={t} className="text-xs bg-zinc-100 text-zinc-500 px-2 py-0.5 rounded">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between mt-2">
+                          <p className="text-xs text-zinc-400">
+                            {s.source_title && `${s.source_title} · `}
+                            {new Date(s.captured_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                          </p>
+                          {s.source_url && (
+                            <a href={s.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-zinc-400 hover:text-zinc-700 underline">Source ↗</a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

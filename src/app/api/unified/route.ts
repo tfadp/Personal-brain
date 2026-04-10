@@ -13,18 +13,27 @@ const anthropic = new Anthropic();
 type Intent =
   | "query_contacts"
   | "query_signals"
+  | "query_combined"
   | "ingest_signal"
   | "update_contact"
   | "add_contact";
 
 const VALID_INTENTS: Intent[] = [
-  "query_contacts", "query_signals", "ingest_signal", "update_contact", "add_contact",
+  "query_contacts", "query_signals", "query_combined", "ingest_signal", "update_contact", "add_contact",
 ];
 
 // Fast heuristic — handles the obvious cases without a Claude round-trip.
 function fast_intent(input: string): Intent | null {
   const t = input.toLowerCase().trim();
   if (/^https?:\/\/\S+$/.test(input.trim())) return "ingest_signal";
+  // Combined: references both research/knowledge AND people in the same query
+  if (/(what (do i know|have i saved|does my research say|does cortex say)|what.{0,30}(saved|brain|research)).{0,80}(who (do i know|should i talk|should i meet)|people|contacts)/i.test(t)) return "query_combined";
+  if (/(who (do i know|should i talk|should i meet)).{0,80}(what (do i know|have i saved|does my research)|research|ideas|notes|brain)/i.test(t)) return "query_combined";
+  if (/\bi('m| am) thinking about.{0,60}(who|people|contacts|talk to)\b/i.test(t)) return "query_combined";
+  if (/\bwho.{0,30}(understands?|knows?|works? (in|on|with)).{0,30}(and|that also|who also).{0,30}(my research|what i (know|saved|read))\b/i.test(t)) return "query_combined";
+  if (/\bwho (do i know|should i talk to).+\band\b.+(what|research|saved|brain)\b/i.test(t)) return "query_combined";
+  if (/\bwho (do i know|should i meet).+\bwhat.+(know|saved|research)\b/i.test(t)) return "query_combined";
+  if (/\bwho (do i know|should i meet).+\b(ai|sports|media|finance|tech|venture|startup)/i.test(t)) return "query_contacts";
   if (/\bwho (do i know|should i meet|to (meet|see|talk|catch up)|do i need to follow up)\b/.test(t)) return "query_contacts";
   if (/\b(who|what).{0,20}follow.?up\b/.test(t)) return "query_contacts";
   if (/\b(i('m| am)|i've) (going|headed|traveling|flying) to\b/.test(t)) return "query_contacts";
@@ -554,6 +563,91 @@ Only include genuinely relevant items.`,
   return { type: "signals", results: ranked };
 }
 
+async function handle_query_combined(input: string) {
+  const supabase = getSupabase();
+
+  // Run signals + contacts fetch in parallel
+  const terms = extract_contact_search_terms(input);
+
+  const signal_filters = terms.map((t) => `summary.ilike.%${t}%`);
+  const contact_filters = terms.flatMap((t) => [
+    `name.ilike.%${t}%`,
+    ...SEARCH_FIELDS.map((f) => `${f}.ilike.%${t}%`),
+  ]);
+
+  const [signal_res, contact_res] = await Promise.all([
+    supabase
+      .from("signals")
+      .select("id,summary,topics,source_title,source_url,captured_at")
+      .or(signal_filters.length > 0 ? signal_filters.join(",") : "id.neq.00000000-0000-0000-0000-000000000000")
+      .order("captured_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .or(contact_filters.length > 0 ? contact_filters.join(",") : "id.neq.00000000-0000-0000-0000-000000000000")
+      .order("contact_quality", { ascending: false, nullsFirst: false })
+      .limit(100),
+  ]);
+
+  const raw_signals = signal_res.data ?? [];
+  const raw_contacts = as_contacts(contact_res.data);
+
+  // Single Claude call: read both datasets and synthesize the overlap
+  const synthesis_res = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 2048,
+    messages: [{
+      role: "user",
+      content: `You are a personal network and knowledge assistant. The user is asking a combined question about their research AND their contacts.
+
+Question: "${input}"
+
+Their saved research/signals:
+${JSON.stringify(raw_signals, null, 2)}
+
+Their contacts (pre-filtered as relevant):
+${JSON.stringify(raw_contacts, null, 2)}
+
+Your job:
+1. Summarize what their research says about the topic (2-4 sentences max, cite specific signals)
+2. Identify the most relevant contacts — especially people who bridge the topics in the query
+3. Write a short "synthesis" paragraph connecting the research themes to specific contacts
+
+Return ONLY valid JSON:
+{
+  "synthesis": "2-4 sentence paragraph connecting the research to the people — the 'so what'",
+  "signal_ids": ["ids of the most relevant signals, up to 6"],
+  "contact_ids": ["ids of the most relevant contacts, up to 10 — prioritize contact_quality=3 and people who bridge the topics"],
+  "contact_notes": { "contact_id": "one sentence on why this person is relevant to the specific research" }
+}`,
+    }],
+  });
+
+  const raw = synthesis_res.content[0].type === "text" ? synthesis_res.content[0].text : "{}";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  let parsed: { synthesis: string; signal_ids: string[]; contact_ids: string[]; contact_notes: Record<string, string> };
+  try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not synthesize results." }; }
+
+  // Fetch full signal records for matched IDs
+  const sig_by_id = Object.fromEntries(raw_signals.map((s) => [s.id, s]));
+  const signals = (parsed.signal_ids ?? []).map((id) => sig_by_id[id]).filter(Boolean);
+
+  // Fetch full contact records for matched IDs
+  const { data: full_contacts } = await supabase.from("contacts").select("*").in("id", parsed.contact_ids ?? []);
+  const contacts = (full_contacts ?? []).map((c: Contact) => ({
+    ...c,
+    relevance: parsed.contact_notes?.[c.id] ?? null,
+  }));
+
+  return {
+    type: "combined",
+    synthesis: parsed.synthesis,
+    signals,
+    contacts,
+  };
+}
+
 async function handle_ingest_signal(input: string) {
   if (input.length > 50000) {
     return { type: "error", message: "Input too long (max 50 000 characters)" };
@@ -931,6 +1025,7 @@ If it is not a text/messaging screenshot, return:
 const INTENT_STATUS: Record<string, string> = {
   query_contacts: "Searching your contacts...",
   query_signals:  "Searching your brain...",
+  query_combined: "Connecting your research and contacts...",
   ingest_signal:  "Saving to your brain...",
   update_contact: "Updating contact...",
   add_contact:    "Adding contact...",
@@ -975,6 +1070,7 @@ export async function POST(request: NextRequest) {
         switch (intent) {
           case "query_contacts": send(await handle_query_contacts(input)); break;
           case "query_signals":  send(await handle_query_signals(input)); break;
+          case "query_combined": send(await handle_query_combined(input)); break;
           case "ingest_signal":  send(await handle_ingest_signal(input)); break;
           case "update_contact": send(await handle_update_contact(input, contact_id)); break;
           case "add_contact":    send(await handle_add_contact(input)); break;
