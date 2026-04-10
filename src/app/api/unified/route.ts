@@ -25,7 +25,8 @@ const VALID_INTENTS: Intent[] = [
 function fast_intent(input: string): Intent | null {
   const t = input.toLowerCase().trim();
   if (/^https?:\/\/\S+$/.test(input.trim())) return "ingest_signal";
-  if (/\bwho (do i know|should i meet|to (meet|see|talk|catch up))\b/.test(t)) return "query_contacts";
+  if (/\bwho (do i know|should i meet|to (meet|see|talk|catch up)|do i need to follow up)\b/.test(t)) return "query_contacts";
+  if (/\b(who|what).{0,20}follow.?up\b/.test(t)) return "query_contacts";
   if (/\b(i('m| am)|i've) (going|headed|traveling|flying) to\b/.test(t)) return "query_contacts";
   if (/\b(find|show me|list) (contacts?|people|someone|connections?)\b/.test(t)) return "query_contacts";
   if (/\bwhat (do i know about|have i (saved|read)|did i save)\b/.test(t)) return "query_signals";
