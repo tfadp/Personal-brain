@@ -115,7 +115,34 @@ async function get_contact_candidates(input: string): Promise<Contact[]> {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
+// Detect if a query is specifically asking for follow-up contacts
+function is_follow_up_query(input: string): boolean {
+  const t = input.toLowerCase();
+  return /follow.?up|reach out|ping|remind me|need to call|need to email|should contact/.test(t);
+}
+
 async function handle_query_contacts(input: string) {
+  const supabase = getSupabase();
+
+  // Follow-up queries: fetch directly from DB — no LLM ranking needed
+  if (is_follow_up_query(input)) {
+    const { data } = await supabase
+      .from("contacts")
+      .select("*")
+      .eq("follow_up", true)
+      .order("updated_at", { ascending: false });
+
+    if (!data || data.length === 0) {
+      return { type: "contacts", results: [], message: "No contacts marked for follow-up." };
+    }
+    // Add relevance note from follow_up_note if present
+    const results = data.map((c: Contact) => ({
+      ...c,
+      relevance: c.follow_up_note ?? "Marked for follow-up",
+    }));
+    return { type: "contacts", results };
+  }
+
   const contacts = await get_contact_candidates(input);
   if (contacts.length === 0) return { type: "contacts", results: [] };
 
@@ -131,7 +158,6 @@ Query: "${input}"
 RULES:
 - If the query mentions a specific city or country, ONLY return contacts in that location
 - contact_quality 3 = real relationship, prefer strongly; contact_quality 1 = noise, surface last
-- follow_up = true contacts should be surfaced prominently for reconnect queries
 - Return an empty array if no contacts genuinely match
 
 Contacts:
@@ -265,6 +291,14 @@ Only include fields explicitly mentioned.`,
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
   let parsed: { contact_name: string; updates: UpdatePayload; action: string };
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not understand that command." }; }
+
+  // If the raw input clearly signals follow-up intent, enforce it — don't trust Claude to infer it
+  if (/\bfollow.?up\b|\breach out\b|\bping\b|\bneed to (call|email|text)\b/i.test(input)) {
+    parsed.updates.follow_up = true;
+    if (!parsed.updates.follow_up_note) {
+      parsed.updates.follow_up_note = input;
+    }
+  }
 
   const result = await apply_contact_update(parsed.contact_name, parsed.updates, parsed.action);
 
