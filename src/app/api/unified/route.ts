@@ -67,8 +67,45 @@ Input: "${input}"`,
 
 // ── Contact search ────────────────────────────────────────────────────────────
 
-// Fields Claude needs for ranking — not the full row
-const SLIM_FIELDS = "id,name,company,role,city,country,contact_quality,topics,follow_up,follow_up_note";
+// Fields needed for fast ranking and result cards — slimmer than the full row.
+const SLIM_FIELDS = [
+  "id", "name", "company", "role", "city", "country", "relationship_strength",
+  "how_you_know_them", "topics", "last_meaningful_contact", "notes",
+  "contact_quality", "follow_up", "follow_up_note",
+].join(",");
+
+const SEARCH_FIELDS = ["company", "role", "city", "country", "how_you_know_them", "notes"] as const;
+const SIGNAL_SEARCH_FIELDS = ["summary", "source_title"] as const;
+const DIRECT_RESULT_LIMIT = 5000;
+const SEMANTIC_CANDIDATE_LIMIT = 250;
+
+const SEARCH_STOP_WORDS = new Set([
+  "who", "what", "where", "when", "why", "how", "know", "people", "person",
+  "contacts", "contact", "should", "meet", "meets", "find", "finds", "show",
+  "shows", "list", "lists", "about", "early", "stage", "someone", "reach",
+  "today", "email", "call", "there", "their", "that", "this", "these", "those",
+  "which", "think", "need", "want", "like", "some", "good", "best", "great",
+  "help", "tell", "give", "make", "take", "follow", "ping", "remind", "catch",
+  "talk", "text", "message", "work", "works", "working", "worked", "does",
+  "with", "from", "have", "they", "all", "any", "the", "and", "for", "you",
+]);
+
+const SHORT_SEARCH_TERMS = new Set(["ai", "vc", "pr"]);
+
+const SEARCH_ALIASES: Record<string, string[]> = {
+  ai: ["ai", "artificial intelligence", "machine learning", "ml"],
+  event: ["event", "events", "experiential"],
+  events: ["event", "events", "experiential"],
+  finance: ["finance", "financial", "banking", "investor", "investment"],
+  investing: ["investing", "investment", "investments", "investor", "venture", "capital"],
+  investment: ["investment", "investments", "investor", "venture", "capital"],
+  investments: ["investment", "investments", "investor", "venture", "capital"],
+  investor: ["investor", "investment", "investing", "venture", "capital"],
+  media: ["media", "publishing", "publisher", "journalist", "content"],
+  sport: ["sport", "sports", "athlete", "athletics"],
+  sports: ["sport", "sports", "athlete", "athletics"],
+  vc: ["vc", "venture", "investor", "investment"],
+};
 
 // Common city abbreviations → expand before searching
 const CITY_ALIASES: Record<string, string[]> = {
@@ -123,6 +160,119 @@ interface StructuredResult {
   results: Contact[];
 }
 
+function parse_json_array<T>(raw: string): T[] {
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  try {
+    const parsed = JSON.parse(clean);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    const match = clean.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    try {
+      const parsed = JSON.parse(match[0]);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+function as_contacts(data: unknown): Contact[] {
+  return (Array.isArray(data) ? data : []) as Contact[];
+}
+
+function as_signals(data: unknown): Signal[] {
+  return (Array.isArray(data) ? data : []) as Signal[];
+}
+
+function unique_by_id<T extends { id: string }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.id, item])).values()];
+}
+
+function unique_terms(terms: string[]): string[] {
+  return [...new Set(terms.map((term) => term.toLowerCase().trim()).filter(Boolean))];
+}
+
+function expand_search_terms(term: string): string[] {
+  const aliases = SEARCH_ALIASES[term] ?? [];
+  const variants = [term, ...aliases];
+  if (term.endsWith("ies") && term.length > 4) variants.push(`${term.slice(0, -3)}y`);
+  if (term.endsWith("s") && term.length > 3) variants.push(term.slice(0, -1));
+  if (!term.endsWith("s") && term.length > 3) variants.push(`${term}s`);
+  return variants;
+}
+
+function extract_contact_search_terms(input: string): string[] {
+  const raw_terms = input
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter((word) =>
+      !SEARCH_STOP_WORDS.has(word) &&
+      (word.length > 2 || SHORT_SEARCH_TERMS.has(word))
+    );
+  return unique_terms(raw_terms.flatMap(expand_search_terms)).slice(0, 12);
+}
+
+function contact_field_text(contact: Contact, field: (typeof SEARCH_FIELDS)[number]): string {
+  return String(contact[field] ?? "").toLowerCase();
+}
+
+function contact_topic_text(contact: Contact): string {
+  return (contact.topics ?? []).join(" ").toLowerCase();
+}
+
+function contact_match_score(contact: Contact, terms: string[]): number {
+  const name_score = terms.some((term) => contact.name.toLowerCase().includes(term)) ? 10 : 0;
+  const role_score = terms.some((term) => contact_field_text(contact, "role").includes(term)) ? 8 : 0;
+  const topic_score = terms.some((term) => contact_topic_text(contact).includes(term)) ? 7 : 0;
+  const company_score = terms.some((term) => contact_field_text(contact, "company").includes(term)) ? 6 : 0;
+  const context_score = terms.some((term) =>
+    contact_field_text(contact, "how_you_know_them").includes(term) ||
+    contact_field_text(contact, "notes").includes(term)
+  ) ? 4 : 0;
+  const location_score = terms.some((term) =>
+    contact_field_text(contact, "city").includes(term) ||
+    contact_field_text(contact, "country").includes(term)
+  ) ? 2 : 0;
+  return name_score + role_score + topic_score + company_score + context_score + location_score;
+}
+
+function normalized_contact_quality(contact: Contact): number {
+  return contact.contact_quality ?? 0;
+}
+
+function contact_relevance(contact: Contact, terms: string[]): string {
+  const matched_term = terms.find((term) =>
+    contact.name.toLowerCase().includes(term) ||
+    contact_field_text(contact, "role").includes(term) ||
+    contact_field_text(contact, "company").includes(term) ||
+    contact_topic_text(contact).includes(term) ||
+    contact_field_text(contact, "how_you_know_them").includes(term) ||
+    contact_field_text(contact, "notes").includes(term)
+  );
+  if (!matched_term) return "Matched this contact search.";
+  if (contact.name.toLowerCase().includes(matched_term)) return `Matched name: ${contact.name}`;
+  if (contact_field_text(contact, "role").includes(matched_term)) return `Matched role: ${contact.role}`;
+  if (contact_field_text(contact, "company").includes(matched_term)) return `Matched company: ${contact.company}`;
+  if (contact_topic_text(contact).includes(matched_term)) return `Matched topic: ${matched_term}`;
+  return `Matched context for ${matched_term}`;
+}
+
+function rank_direct_contacts(contacts: Contact[], terms: string[]): Contact[] {
+  return [...contacts]
+    .sort((a, b) =>
+      normalized_contact_quality(b) - normalized_contact_quality(a) ||
+      contact_match_score(b, terms) - contact_match_score(a, terms) ||
+      a.name.localeCompare(b.name)
+    )
+    .map((contact) => ({
+      ...contact,
+      notes: null,
+      relevance: contact_relevance(contact, terms),
+    }));
+}
+
 /**
  * Try to answer the query directly from the DB without calling Claude.
  * Returns null if the query is semantic and needs LLM ranking.
@@ -130,6 +280,7 @@ interface StructuredResult {
 async function try_structured_query(input: string): Promise<StructuredResult | null> {
   const supabase = getSupabase();
   const t = input.toLowerCase();
+  const search_terms = extract_contact_search_terms(input);
 
   // Location match — "who do I know in London" / "who do I know in Los Angeles"
   for (const p of STRUCTURED_PATTERNS) {
@@ -138,17 +289,15 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
       const term = p.extract(m);
       // For city searches, expand aliases (e.g. "los angeles" → also search "la")
       const terms = p.field === "city" ? expand_city(term) : [term.toLowerCase()];
-      const filters = terms.flatMap((alias) => [
-        `city.ilike.%${alias}%`,
-        `country.ilike.%${alias}%`,
-      ]);
+      const fields = p.field === "city" ? ["city", "country"] : [p.field];
+      const filters = terms.flatMap((alias) => fields.map((field) => `${field}.ilike.%${alias}%`));
       const { data } = await supabase
         .from("contacts")
         .select(SLIM_FIELDS)
         .or(filters.join(","))
         .order("contact_quality", { ascending: false, nullsFirst: false })
-        .limit(50);
-      if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
+        .limit(DIRECT_RESULT_LIMIT);
+      if (data && data.length > 0) return { type: "direct", results: rank_direct_contacts(as_contacts(data), terms) };
     }
   }
 
@@ -160,34 +309,50 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
         .select(SLIM_FIELDS)
         .ilike("role", `%${term}%`)
         .order("contact_quality", { ascending: false, nullsFirst: false })
-        .limit(50);
-      if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
+        .limit(DIRECT_RESULT_LIMIT);
+      if (data && data.length > 0) return { type: "direct", results: rank_direct_contacts(as_contacts(data), [term]) };
     }
   }
 
-  // Topic keyword match — "who do I know in sports media"
-  // Use a generous stop-word list so generic query words don't produce spurious matches
-  const TOPIC_STOP_WORDS = new Set([
-    "know", "people", "contacts", "should", "meets", "finds", "shows", "lists",
-    "about", "early", "stage", "invest", "someone", "reach", "today", "email",
-    "call", "there", "their", "where", "which", "think", "need", "want", "like",
-    "some", "good", "best", "great", "help", "tell", "give", "make", "take",
-    "follow", "ping", "remind", "catch", "meet", "talk", "text", "message",
-  ]);
-  const topic_words = t
-    .replace(/[^a-z0-9 ]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 4 && !TOPIC_STOP_WORDS.has(w));
+  if (search_terms.length > 0) {
+    // Industry/topic search should not need Claude. Try text columns first,
+    // then fall back to case-insensitive array matching in app code.
+    const text_filters = search_terms.flatMap((word) =>
+      [`name.ilike.%${word}%`, ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${word}%`)]
+    );
+    const { data: text_matches } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .or(text_filters.join(","))
+      .order("contact_quality", { ascending: false, nullsFirst: false })
+      .limit(DIRECT_RESULT_LIMIT);
 
-  if (topic_words.length > 0) {
-    // Use Postgres array overlap — topics is text[]
+    // Use Postgres array overlap when topic casing matches.
     const { data } = await supabase
       .from("contacts")
       .select(SLIM_FIELDS)
-      .overlaps("topics", topic_words)
+      .overlaps("topics", search_terms)
       .order("contact_quality", { ascending: false, nullsFirst: false })
-      .limit(50);
-    if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
+      .limit(DIRECT_RESULT_LIMIT);
+
+    const { data: topic_candidates } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .order("contact_quality", { ascending: false, nullsFirst: false })
+      .limit(DIRECT_RESULT_LIMIT);
+    const topic_matches = as_contacts(topic_candidates).filter((contact) =>
+      contact.topics?.some((topic) => {
+        const normalized = topic.toLowerCase();
+        return search_terms.some((word) => normalized.includes(word));
+      }) ?? false
+    );
+
+    const matches = unique_by_id([
+      ...as_contacts(text_matches),
+      ...as_contacts(data),
+      ...topic_matches,
+    ]);
+    if (matches.length > 0) return { type: "direct", results: rank_direct_contacts(matches, search_terms) };
   }
 
   return null;
@@ -200,35 +365,35 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
 async function get_semantic_candidates(input: string): Promise<Contact[]> {
   const supabase = getSupabase();
 
-  const keywords = input
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 3)
-    .slice(0, 5);
+  const keywords = extract_contact_search_terms(input).slice(0, 8);
 
   if (keywords.length > 0) {
     const filters = keywords.flatMap((k) => [
       `name.ilike.%${k}%`,
-      `company.ilike.%${k}%`,
-      `city.ilike.%${k}%`,
-      `role.ilike.%${k}%`,
+      ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${k}%`),
     ]);
     const { data } = await supabase
       .from("contacts")
       .select(SLIM_FIELDS)
       .or(filters.join(","))
-      .limit(100);
-    if (data && data.length > 0) return data as Contact[];
+      .limit(SEMANTIC_CANDIDATE_LIMIT);
+    if (data && data.length > 0) return as_contacts(data);
   }
 
-  // True semantic fallback — recent 100, Claude will rank
+  // True semantic fallback — recent candidates, Claude will rank
   const { data } = await supabase
     .from("contacts")
     .select(SLIM_FIELDS)
     .order("updated_at", { ascending: false })
-    .limit(100);
-  return (data ?? []) as Contact[];
+    .limit(SEMANTIC_CANDIDATE_LIMIT);
+  return as_contacts(data);
+}
+
+function sort_contacts_three_stars_first<T extends Partial<Contact>>(contacts: T[]): T[] {
+  return [...contacts].sort((a, b) =>
+    (b.contact_quality ?? 0) - (a.contact_quality ?? 0) ||
+    String(a.name ?? "").localeCompare(String(b.name ?? ""))
+  );
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -254,10 +419,12 @@ async function handle_query_contacts(input: string) {
       return { type: "contacts", results: [], message: "No contacts marked for follow-up." };
     }
     // Add relevance note from follow_up_note if present
-    const results = data.map((c: Contact) => ({
-      ...c,
-      relevance: c.follow_up_note ?? "Marked for follow-up",
-    }));
+    const results = sort_contacts_three_stars_first(
+      data.map((c: Contact) => ({
+        ...c,
+        relevance: c.follow_up_note ?? "Marked for follow-up",
+      }))
+    );
     return { type: "contacts", results };
   }
 
@@ -294,23 +461,67 @@ Return ONLY a valid JSON array:
   });
 
   const raw = res.content[0].type === "text" ? res.content[0].text : "[]";
-  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  let results = [];
-  try { results = JSON.parse(clean); } catch { const m = clean.match(/\[[\s\S]*\]/); results = m ? JSON.parse(m[0]) : []; }
+  const results = sort_contacts_three_stars_first(
+    parse_json_array<Partial<Contact> & { relevance?: string }>(raw)
+  );
   return { type: "contacts", results };
 }
 
 async function handle_query_signals(input: string) {
   const supabase = getSupabase();
+  const search_terms = extract_contact_search_terms(input);
 
-  // Pre-filter: most recent 200 signals — Claude ranks from this candidate set
-  const { data: all } = await supabase
-    .from("signals")
-    .select("id,summary,topics,source_title,captured_at")
-    .order("captured_at", { ascending: false })
-    .limit(200);
+  let all: Signal[] = [];
 
-  if (!all || all.length === 0) return { type: "signals", results: [] };
+  if (search_terms.length > 0) {
+    const text_filters = search_terms.flatMap((word) =>
+      SIGNAL_SEARCH_FIELDS.map((field) => `${field}.ilike.%${word}%`)
+    );
+    const { data: text_matches } = await supabase
+      .from("signals")
+      .select("id,summary,topics,source_title,captured_at")
+      .or(text_filters.join(","))
+      .order("captured_at", { ascending: false })
+      .limit(120);
+
+    const { data: topic_matches } = await supabase
+      .from("signals")
+      .select("id,summary,topics,source_title,captured_at")
+      .overlaps("topics", search_terms)
+      .order("captured_at", { ascending: false })
+      .limit(120);
+
+    // The DB array overlap is case-sensitive, so add a bounded app-side fallback.
+    const { data: topic_candidates } = await supabase
+      .from("signals")
+      .select("id,summary,topics,source_title,captured_at")
+      .order("captured_at", { ascending: false })
+      .limit(1000);
+    const case_insensitive_topics = as_signals(topic_candidates).filter((signal) =>
+      signal.topics?.some((topic) => {
+        const normalized = topic.toLowerCase();
+        return search_terms.some((term) => normalized.includes(term));
+      }) ?? false
+    );
+
+    all = unique_by_id([
+      ...as_signals(text_matches),
+      ...as_signals(topic_matches),
+      ...case_insensitive_topics,
+    ]).slice(0, 200);
+  }
+
+  if (all.length === 0) {
+    // Fallback: recent 200 signals — Claude ranks from this candidate set.
+    const { data: recent } = await supabase
+      .from("signals")
+      .select("id,summary,topics,source_title,captured_at")
+      .order("captured_at", { ascending: false })
+      .limit(200);
+    all = as_signals(recent);
+  }
+
+  if (all.length === 0) return { type: "signals", results: [] };
 
   const rank_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -331,12 +542,11 @@ Only include genuinely relevant items.`,
   });
 
   const rank_raw = rank_res.content[0].type === "text" ? rank_res.content[0].text : "[]";
-  const rank_clean = rank_raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  let ranked: (Partial<Signal> & { relevance?: string })[] = [];
-  try { ranked = JSON.parse(rank_clean); } catch { const m = rank_clean.match(/\[[\s\S]*\]/); ranked = m ? JSON.parse(m[0]) : []; }
+  let ranked = parse_json_array<Partial<Signal> & { relevance?: string }>(rank_raw);
 
   // Fetch full records for the matched IDs (source_url not included in candidate query)
   const ids = ranked.map((r) => r.id).filter(Boolean);
+  if (ids.length === 0) return { type: "signals", results: [] };
   const { data: full } = await supabase.from("signals").select("*").in("id", ids);
   const by_id = Object.fromEntries((full ?? []).map((s: Signal) => [s.id, s]));
   ranked = ranked.map((r) => ({ ...by_id[r.id as string], relevance: r.relevance }));

@@ -102,3 +102,49 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY
 ANTHROPIC_API_KEY
 SUPADATA_API_KEY   # for YouTube transcripts
 ```
+
+---
+
+## April 10, 2026 — Search reliability + category-intelligence update
+
+### What changed
+- Fixed the failing natural-language contact query path where prompts like "who do I know that works in sports" could throw and surface the generic UI error.
+- Reworked contact search in `src/app/api/unified/route.ts` into a hybrid flow:
+  - extract category/search terms from natural language
+  - expand a small alias set (`sports`, `events`, `finance`, `investing`, `media`, `ai`, `vc`)
+  - search directly across `name`, `company`, `role`, `city`, `country`, `how_you_know_them`, `notes`, and `topics`
+  - rank direct DB matches deterministically
+  - always sort `contact_quality = 3` contacts to the top
+  - return the full relevant direct-match set rather than clipping to a tiny result window
+  - only fall back to Claude when the query is genuinely semantic
+- Added a safe JSON-array parser for model responses so malformed/truncated Claude output no longer crashes the route.
+- Extended signal/article search to use the same keyword/topic prefiltering before Claude ranking, instead of only ranking the most recent 200 items.
+- Kept sensitive/noisy `notes` searchable for ranking, but removed them from the direct contact response payload shown in the UI.
+
+### Why
+- The old path was too brittle for the app’s core promise. Category queries like "sports", "events", "finance", and "media" are not edge cases; they are exactly what users expect to ask.
+- The route was over-dependent on Claude even for obvious category searches that the database can answer faster and more reliably.
+- When Claude returned malformed JSON, a second unsafe `JSON.parse()` threw and caused the "Something went wrong. Try again." message even though the app had enough information to fail gracefully.
+- Signal search had similar recall issues because it heavily favored recency over category matching.
+- Contacts with `contact_quality = 3` are the strongest relationships in the dataset and should consistently outrank weaker ties when the user asks broad discovery questions.
+
+### Verification
+- `npm run lint`
+- `npx tsc --noEmit`
+- `npm test`
+- Real route smoke tests via local Next dev server:
+  - `who do I know that works in sports`
+  - `who do I know that works in events`
+  - `who do I know that works in finance`
+  - `who do I know that works in investing`
+  - `who do I know that works in media`
+  - `who do I know in london`
+  - `who do I know in sports media`
+  - `what have I saved about sports`
+  - `what have I saved about media`
+  - `what have I saved about finance`
+
+### Notes for follow-up
+- Alias expansion is intentionally small and hand-tuned. If category coverage needs to grow, the next step is probably a proper synonyms table or embedding-based candidate retrieval instead of continuing to expand inline maps forever.
+- Contact direct-ranking is deterministic and fast, but still heuristic. If results feel slightly "off" for broad categories, the next improvement is a hybrid scorer that combines deterministic match score with a much smaller Claude rerank over the top ~20 DB hits.
+- Signal search still uses Claude for final reranking. It now has a better candidate set, but it is not yet a full semantic retrieval system.
