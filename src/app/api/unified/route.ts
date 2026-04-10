@@ -62,6 +62,26 @@ Input: "${input}"`,
 // Fields Claude needs for ranking — not the full row
 const SLIM_FIELDS = "id,name,company,role,city,country,contact_quality,topics,follow_up,follow_up_note";
 
+// Common city abbreviations → expand before searching
+const CITY_ALIASES: Record<string, string[]> = {
+  "los angeles": ["los angeles", "la"],
+  "new york":    ["new york", "nyc", "ny"],
+  "san francisco": ["san francisco", "sf"],
+  "washington":  ["washington", "dc", "d.c."],
+  "chicago":     ["chicago", "chi"],
+  "london":      ["london"],
+  "miami":       ["miami"],
+  "boston":      ["boston"],
+};
+
+function expand_city(term: string): string[] {
+  const t = term.toLowerCase().trim();
+  for (const [canonical, aliases] of Object.entries(CITY_ALIASES)) {
+    if (aliases.includes(t) || t.includes(canonical)) return aliases;
+  }
+  return [t];
+}
+
 // Structured query patterns — these hit the DB directly, no Claude needed
 const STRUCTURED_PATTERNS: Array<{
   pattern: RegExp;
@@ -103,15 +123,21 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
   const supabase = getSupabase();
   const t = input.toLowerCase();
 
-  // Location match — "who do I know in London"
+  // Location match — "who do I know in London" / "who do I know in Los Angeles"
   for (const p of STRUCTURED_PATTERNS) {
     const m = input.match(p.pattern);
     if (m) {
       const term = p.extract(m);
+      // For city searches, expand aliases (e.g. "los angeles" → also search "la")
+      const terms = p.field === "city" ? expand_city(term) : [term.toLowerCase()];
+      const filters = terms.flatMap((t) => [
+        `city.ilike.%${t}%`,
+        `country.ilike.%${t}%`,
+      ]);
       const { data } = await supabase
         .from("contacts")
         .select(SLIM_FIELDS)
-        .ilike(p.field, `%${term}%`)
+        .or(filters.join(","))
         .order("contact_quality", { ascending: false })
         .limit(50);
       if (data && data.length > 0) return { type: "direct", results: data as Contact[] };
