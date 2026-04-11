@@ -596,10 +596,10 @@ async function handle_query_combined(input: string) {
   // Single Claude call — think like a brain, not a library
   const synthesis_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{
       role: "user",
-      content: `You are the user's personal brain. You have read everything they have saved and you know everyone in their network. You think for yourself. You form opinions. You make non-obvious connections. You do not summarize — you reason.
+      content: `You are Cortex — the user's personal synthesis engine and thinking partner. You have read everything they have saved and you know everyone in their network.
 
 The user is asking: "${input}"
 
@@ -609,35 +609,66 @@ ${JSON.stringify(raw_signals, null, 2)}
 People in their network (pre-filtered as relevant):
 ${JSON.stringify(raw_contacts, null, 2)}
 
-Your job is to THINK, not to catalogue. Specifically:
+Your job is to synthesize, not summarize. Think across the full set of saved material and form a real point of view.
 
-1. Form an actual VIEW on the question. What do you actually think, based on everything you've read? Be direct and opinionated. Don't hedge into "on one hand / on the other hand." Take a position.
+Rules:
+- Do NOT produce a source-by-source summary
+- Do NOT merely list recurring themes
+- Identify the deepest recurring patterns
+- Find non-obvious connections across items
+- Notice contradictions, edge cases, and second-order effects
+- Separate durable signal from hype, repetition, and noise
+- Form a real judgment
+- If the material is too thin or contradictory, say so
+- Use plain, sharp English — no consultant phrasing
+- If a conclusion is an inference, label it as an inference
 
-2. Surface the NON-OBVIOUS connection. What pattern across the saved material is not immediately visible? What tension or contradiction exists? What does the research imply that the user hasn't explicitly asked?
-
-3. Tell them exactly WHO to call and WHY — not "here are relevant contacts" but "call X before Y because Z." Make it specific and actionable. The why should reference something concrete from their research or network.
-
-4. If there's a gap — something they should know but haven't saved yet, or a person missing from their network for this — say so.
-
-Do NOT list summaries of articles. Do NOT explain what each signal says. Treat the saved research as evidence for your opinion, not as content to be reported back.
-
-Return ONLY valid JSON:
+Return ONLY valid JSON with exactly this structure:
 {
-  "view": "3-5 sentences of your actual opinion and reasoning — direct, specific, no hedging",
-  "hidden_connection": "1-2 sentences on the non-obvious pattern or tension you see across the material",
-  "next_move": "1-2 sentences on the single most important action — who to call, what to decide, what to find out",
-  "contact_ids": ["up to 5 contact IDs — only the ones that genuinely matter for THIS question, in priority order"],
-  "contact_notes": { "contact_id": "one sharp sentence: not their job title, but WHY them specifically for this question right now" },
-  "signal_ids": ["up to 4 signal IDs that most informed your view — evidence, not a reading list"]
-}`,
+  "core_thesis": "1 tight paragraph answering: what do these materials collectively suggest is true?",
+  "point_of_view": [
+    "specific, non-generic, judgmental insight grounded in the material",
+    "specific, non-generic, judgmental insight grounded in the material",
+    "specific, non-generic, judgmental insight grounded in the material",
+    "specific, non-generic, judgmental insight grounded in the material"
+  ],
+  "implications": [
+    "what this means for operators and builders",
+    "what this means for investors and strategists",
+    "what this means about timing or market direction"
+  ],
+  "tensions": [
+    "what does not fully fit the thesis",
+    "where the evidence conflicts",
+    "what could make this synthesis wrong"
+  ],
+  "missing_information": [
+    "important question the material does not answer",
+    "important question the material does not answer",
+    "important question the material does not answer"
+  ],
+  "takeaway": "one crisp sentence — the most memorable version of the thesis",
+  "hot_take": "a stronger, more provocative version of the same conclusion",
+  "next_move": "the single most important action right now — what to decide, find out, or who to call first and why",
+  "contact_ids": ["up to 5 contact IDs in priority order — only people who genuinely matter for THIS question"],
+  "contact_notes": { "contact_id": "one sharp sentence on WHY this person specifically — not their title, but what they unlock for this question" },
+  "signal_ids": ["up to 4 signal IDs that most informed your view — the evidence behind the thesis, not a reading list"]
+}
+
+If the saved items span multiple unrelated subtopics, name the clusters briefly in core_thesis, synthesize the dominant one, and note whether the collection is coherent enough for a single POV.`,
     }],
   });
 
   const raw = synthesis_res.content[0].type === "text" ? synthesis_res.content[0].text : "{}";
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
   let parsed: {
-    view: string;
-    hidden_connection: string;
+    core_thesis: string;
+    point_of_view: string[];
+    implications: string[];
+    tensions: string[];
+    missing_information: string[];
+    takeaway: string;
+    hot_take: string;
     next_move: string;
     contact_ids: string[];
     contact_notes: Record<string, string>;
@@ -659,8 +690,13 @@ Return ONLY valid JSON:
 
   return {
     type: "combined",
-    view: parsed.view,
-    hidden_connection: parsed.hidden_connection,
+    core_thesis: parsed.core_thesis,
+    point_of_view: parsed.point_of_view ?? [],
+    implications: parsed.implications ?? [],
+    tensions: parsed.tensions ?? [],
+    missing_information: parsed.missing_information ?? [],
+    takeaway: parsed.takeaway,
+    hot_take: parsed.hot_take,
     next_move: parsed.next_move,
     signals,
     contacts,

@@ -9,7 +9,7 @@ type ResultType =
   | { type: "ingested"; signal: Signal }
   | { type: "updated"; action: string; contact: Contact }
   | { type: "updated_bulk"; updated: string[]; not_found: string[]; action: string }
-  | { type: "combined"; view: string; hidden_connection: string; next_move: string; signals: (Signal & { relevance?: string })[]; contacts: (Contact & { relevance?: string })[] }
+  | { type: "combined"; core_thesis: string; point_of_view: string[]; implications: string[]; tensions: string[]; missing_information: string[]; takeaway: string; hot_take: string; next_move: string; signals: (Signal & { relevance?: string })[]; contacts: (Contact & { relevance?: string })[] }
   | { type: "added"; action?: string; contact: Contact }
   | { type: "added_bulk"; contacts: Contact[]; action: string }
   | { type: "clarify"; message: string; candidates: Pick<Contact, "id" | "name" | "company" | "city">[] }
@@ -331,28 +331,53 @@ export default function Home() {
           {result.type === "combined" && (
             <div className="space-y-5">
 
-              {/* The view — what it actually thinks */}
-              <div className="p-5 bg-zinc-900 text-white rounded-lg space-y-4">
-                <p className="text-sm leading-relaxed">{result.view}</p>
-                {result.hidden_connection && (
-                  <p className="text-sm leading-relaxed text-zinc-300 border-t border-zinc-700 pt-4">{result.hidden_connection}</p>
-                )}
-                {result.next_move && (
-                  <div className="border-t border-zinc-700 pt-4">
-                    <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">Next move</p>
-                    <p className="text-sm text-amber-300 leading-relaxed">{result.next_move}</p>
-                  </div>
-                )}
-              </div>
+              {/* Takeaway — the most memorable line, up top */}
+              {result.takeaway && (
+                <p className="text-base font-medium text-zinc-900 leading-snug">{result.takeaway}</p>
+              )}
 
-              {/* Who to talk to — in priority order, with the specific why */}
+              {/* Core thesis */}
+              {result.core_thesis && (
+                <p className="text-sm text-zinc-700 leading-relaxed">{result.core_thesis}</p>
+              )}
+
+              {/* Point of view bullets */}
+              {result.point_of_view?.length > 0 && (
+                <ul className="space-y-2">
+                  {result.point_of_view.map((p, i) => (
+                    <li key={i} className="flex gap-2 text-sm text-zinc-800">
+                      <span className="text-zinc-300 flex-shrink-0">—</span>
+                      <span>{p}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {/* Hot take */}
+              {result.hot_take && (
+                <div className="px-4 py-3 bg-zinc-900 text-white rounded-lg">
+                  <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">Hot take</p>
+                  <p className="text-sm leading-relaxed">{result.hot_take}</p>
+                </div>
+              )}
+
+              {/* Next move */}
+              {result.next_move && (
+                <div className="px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <p className="text-xs text-amber-600 uppercase tracking-wide mb-1">Next move</p>
+                  <p className="text-sm text-amber-900 leading-relaxed">{result.next_move}</p>
+                </div>
+              )}
+
+              {/* Who to talk to */}
               {result.contacts.length > 0 && (
                 <div className="space-y-2">
+                  <p className="text-xs text-zinc-400 uppercase tracking-wide">Who to talk to</p>
                   {result.contacts.map((c, i) => (
                     <div key={c.id || i} className="flex items-start gap-3 border border-zinc-200 rounded-lg p-3">
-                      <span className="text-xs text-zinc-400 font-mono mt-0.5 w-4 flex-shrink-0">{i + 1}</span>
+                      <span className="text-xs text-zinc-300 font-mono mt-0.5 w-4 flex-shrink-0">{i + 1}</span>
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-medium text-sm">{c.name}</span>
                           <span className="text-xs text-zinc-400">{[c.role, c.company].filter(Boolean).join(" at ")}</span>
                         </div>
@@ -364,19 +389,56 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Sources — collapsed footnotes, not the main event */}
+              {/* Implications, Tensions, Missing — collapsed */}
+              {(result.implications?.length > 0 || result.tensions?.length > 0 || result.missing_information?.length > 0) && (
+                <details className="group">
+                  <summary className="text-xs text-zinc-400 cursor-pointer hover:text-zinc-600 list-none flex items-center gap-1">
+                    <span className="group-open:hidden">▸</span>
+                    <span className="hidden group-open:inline">▾</span>
+                    Implications, tensions & gaps
+                  </summary>
+                  <div className="mt-4 space-y-4 pl-3 border-l-2 border-zinc-100">
+                    {result.implications?.length > 0 && (
+                      <div>
+                        <p className="text-xs text-zinc-400 uppercase tracking-wide mb-2">Implications</p>
+                        <ul className="space-y-1">
+                          {result.implications.map((imp, i) => <li key={i} className="text-sm text-zinc-600 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{imp}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {result.tensions?.length > 0 && (
+                      <div>
+                        <p className="text-xs text-zinc-400 uppercase tracking-wide mb-2">Tensions</p>
+                        <ul className="space-y-1">
+                          {result.tensions.map((t, i) => <li key={i} className="text-sm text-zinc-600 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{t}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {result.missing_information?.length > 0 && (
+                      <div>
+                        <p className="text-xs text-zinc-400 uppercase tracking-wide mb-2">Missing information</p>
+                        <ul className="space-y-1">
+                          {result.missing_information.map((m, i) => <li key={i} className="text-sm text-zinc-600 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{m}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
+
+              {/* Sources — footnotes */}
               {result.signals.length > 0 && (
                 <details className="group">
                   <summary className="text-xs text-zinc-400 cursor-pointer hover:text-zinc-600 list-none flex items-center gap-1">
                     <span className="group-open:hidden">▸</span>
                     <span className="hidden group-open:inline">▾</span>
-                    {result.signals.length} source{result.signals.length > 1 ? "s" : ""} from your brain
+                    {result.signals.length} source{result.signals.length > 1 ? "s" : ""}
                   </summary>
                   <div className="mt-3 space-y-2 pl-3 border-l border-zinc-200">
                     {result.signals.map((s) => (
                       <div key={s.id}>
                         <p className="text-xs text-zinc-500">{s.summary}</p>
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center gap-2 mt-0.5">
                           {s.source_title && <span className="text-xs text-zinc-400">{s.source_title}</span>}
                           {s.source_url && <a href={s.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-zinc-400 hover:text-zinc-600 underline">↗</a>}
                         </div>
