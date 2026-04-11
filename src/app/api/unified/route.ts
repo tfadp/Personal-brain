@@ -593,56 +593,75 @@ async function handle_query_combined(input: string) {
   const raw_signals = signal_res.data ?? [];
   const raw_contacts = as_contacts(contact_res.data);
 
-  // Single Claude call: read both datasets and synthesize the overlap
+  // Single Claude call — think like a brain, not a library
   const synthesis_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2048,
     messages: [{
       role: "user",
-      content: `You are a personal network and knowledge assistant. The user is asking a combined question about their research AND their contacts.
+      content: `You are the user's personal brain. You have read everything they have saved and you know everyone in their network. You think for yourself. You form opinions. You make non-obvious connections. You do not summarize — you reason.
 
-Question: "${input}"
+The user is asking: "${input}"
 
-Their saved research/signals:
+Everything they have saved on this topic:
 ${JSON.stringify(raw_signals, null, 2)}
 
-Their contacts (pre-filtered as relevant):
+People in their network (pre-filtered as relevant):
 ${JSON.stringify(raw_contacts, null, 2)}
 
-Your job:
-1. Summarize what their research says about the topic (2-4 sentences max, cite specific signals)
-2. Identify the most relevant contacts — especially people who bridge the topics in the query
-3. Write a short "synthesis" paragraph connecting the research themes to specific contacts
+Your job is to THINK, not to catalogue. Specifically:
+
+1. Form an actual VIEW on the question. What do you actually think, based on everything you've read? Be direct and opinionated. Don't hedge into "on one hand / on the other hand." Take a position.
+
+2. Surface the NON-OBVIOUS connection. What pattern across the saved material is not immediately visible? What tension or contradiction exists? What does the research imply that the user hasn't explicitly asked?
+
+3. Tell them exactly WHO to call and WHY — not "here are relevant contacts" but "call X before Y because Z." Make it specific and actionable. The why should reference something concrete from their research or network.
+
+4. If there's a gap — something they should know but haven't saved yet, or a person missing from their network for this — say so.
+
+Do NOT list summaries of articles. Do NOT explain what each signal says. Treat the saved research as evidence for your opinion, not as content to be reported back.
 
 Return ONLY valid JSON:
 {
-  "synthesis": "2-4 sentence paragraph connecting the research to the people — the 'so what'",
-  "signal_ids": ["ids of the most relevant signals, up to 6"],
-  "contact_ids": ["ids of the most relevant contacts, up to 10 — prioritize contact_quality=3 and people who bridge the topics"],
-  "contact_notes": { "contact_id": "one sentence on why this person is relevant to the specific research" }
+  "view": "3-5 sentences of your actual opinion and reasoning — direct, specific, no hedging",
+  "hidden_connection": "1-2 sentences on the non-obvious pattern or tension you see across the material",
+  "next_move": "1-2 sentences on the single most important action — who to call, what to decide, what to find out",
+  "contact_ids": ["up to 5 contact IDs — only the ones that genuinely matter for THIS question, in priority order"],
+  "contact_notes": { "contact_id": "one sharp sentence: not their job title, but WHY them specifically for this question right now" },
+  "signal_ids": ["up to 4 signal IDs that most informed your view — evidence, not a reading list"]
 }`,
     }],
   });
 
   const raw = synthesis_res.content[0].type === "text" ? synthesis_res.content[0].text : "{}";
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  let parsed: { synthesis: string; signal_ids: string[]; contact_ids: string[]; contact_notes: Record<string, string> };
+  let parsed: {
+    view: string;
+    hidden_connection: string;
+    next_move: string;
+    contact_ids: string[];
+    contact_notes: Record<string, string>;
+    signal_ids: string[];
+  };
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not synthesize results." }; }
 
   // Fetch full signal records for matched IDs
   const sig_by_id = Object.fromEntries(raw_signals.map((s) => [s.id, s]));
   const signals = (parsed.signal_ids ?? []).map((id) => sig_by_id[id]).filter(Boolean);
 
-  // Fetch full contact records for matched IDs
+  // Fetch full contact records for matched IDs — in priority order
   const { data: full_contacts } = await supabase.from("contacts").select("*").in("id", parsed.contact_ids ?? []);
-  const contacts = (full_contacts ?? []).map((c: Contact) => ({
-    ...c,
-    relevance: parsed.contact_notes?.[c.id] ?? null,
-  }));
+  const contact_map = Object.fromEntries((full_contacts ?? []).map((c: Contact) => [c.id, c]));
+  const contacts = (parsed.contact_ids ?? [])
+    .map((id) => contact_map[id])
+    .filter(Boolean)
+    .map((c: Contact) => ({ ...c, relevance: parsed.contact_notes?.[c.id] ?? null }));
 
   return {
     type: "combined",
-    synthesis: parsed.synthesis,
+    view: parsed.view,
+    hidden_connection: parsed.hidden_connection,
+    next_move: parsed.next_move,
     signals,
     contacts,
   };
