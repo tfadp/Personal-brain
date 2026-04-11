@@ -1,5 +1,39 @@
 # Cortex — Lessons Learned
 
+## 2026-04-10/11
+
+### L20 — max_tokens silently truncates bulk LLM output
+**Problem:** Pasting 20 contacts into bulk add returned only 9 — Claude's JSON response was cut off mid-array at 2048 tokens. `JSON.parse` failed silently, the partial array was dropped, user saw nothing.
+**Fix:** Raised max_tokens to 8192. Added a partial-recovery fallback: if JSON.parse fails, regex-extract every complete `{...}` object so nothing is silently lost. Also trimmed the prompt to omit null fields and halve output size.
+**Rule:** When an LLM call returns a variable-length array, size max_tokens for the worst case and always provide a partial-parse fallback. Never let a truncation turn into a silent drop.
+
+### L21 — Pattern order in fast_intent matters when patterns share keywords
+**Problem:** "mark these for follow up [list of names with emails]" routed to add_contact because the 2+ email heuristic fired before the follow-up pattern could match. User got "All 12 contacts already exist" instead of the follow-up being applied.
+**Fix:** Moved the multi-line-with-follow-up pattern above the email-list pattern.
+**Rule:** Same as L9 — order matters. When adding new fast_intent patterns, check that patterns with broader shared vocabulary come first. Write explicit tests or smoke tests for the new phrasing.
+
+### L22 — Clarify-then-apply requires ID passthrough, not re-search
+**Problem:** When two Tony Grillos matched, the clarify UI let the user pick one — but clicking re-sent the original text ("follow up with Tony Grillo") which re-ran the name search, found both again, returned clarify again. Infinite loop, update never applied.
+**Fix:** Added `apply_contact_update_by_id()` and passed the resolved contact_id from the clarify button directly to the API, bypassing name-matching entirely.
+**Rule:** When a UI step resolves ambiguity, the resolution must carry a stable ID forward — never re-run the ambiguous search a second time and expect a different outcome.
+
+### L23 — Supabase client `.limit()` is overridden by PostgREST max-rows project setting
+**Problem:** `.limit(5000)` in the contacts API still returned 1000 rows because the Supabase project has a max-rows cap of 1000. The client cannot override it.
+**Fix:** Replaced single query with a paginated loop — fetch 1000 rows at a time using `.range(offset, offset+999)` until the chunk is smaller than the page size.
+**Rule:** When a Supabase `.limit()` call doesn't raise the ceiling, suspect PostgREST max-rows. Fix at the project level (dashboard → Settings → API → Max Rows) OR paginate in code. Don't assume client options override project settings.
+
+### L24 — A brain output is not a library output
+**Problem:** The combined-query feature returned a neat breakdown of "here are relevant signals" and "here are relevant contacts" — cataloguing, not thinking. User called it a "library not a brain."
+**Fix:** Rewrote the Claude prompt to demand a direct opinion, a non-obvious connection, a concrete next move, and synthesis (thesis, POV bullets, tensions, gaps, hot take). UI demotes sources to collapsible footnotes so the opinion leads.
+**Rule:** When building a synthesis feature, judge the output by whether it forms a view, not whether it covers the material. A useful brain response has an opinion at the top and evidence at the bottom. A useless one is a reading list with citations.
+
+### L25 — Read the file before committing it
+**Problem:** Committed HANDOFF.md after it was modified without reading it. Global CLAUDE.md says "read the file before proposing to add something to it" — same principle applies to commits.
+**Fix:** Read after the user pointed it out. Nothing was wrong, but the rule was violated.
+**Rule:** Before `git add`ing a file you didn't write in this session, read it. Even if the user described the changes, verify before committing.
+
+---
+
 ## 2026-04-09 (evening)
 
 ### L9 — Intent heuristics must cover the full query vocabulary
