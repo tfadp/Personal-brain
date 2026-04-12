@@ -1,15 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 
-// GET — return contacts list so Claude can match against Gmail senders/recipients
+// GET — return contacts list so clients can match against external sources
+// (Gmail senders, iMessage handles, Calendar attendees). Paginates past the
+// PostgREST max-rows cap so we return the full network.
 export async function GET() {
-  const { data, error } = await getSupabase()
-    .from("contacts")
-    .select("id, name, email, last_meaningful_contact")
-    .order("name");
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ contacts: data });
+  const supabase = getSupabase();
+  const PAGE = 1000;
+  type SyncContact = { id: string; name: string; email: string | null; phone: string | null; last_meaningful_contact: string | null };
+  let all: SyncContact[] = [];
+  for (let page = 0; ; page++) {
+    const { data: chunk, error } = await supabase
+      .from("contacts")
+      .select("id, name, email, phone, last_meaningful_contact")
+      .order("name")
+      .range(page * PAGE, (page + 1) * PAGE - 1);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!chunk || chunk.length === 0) break;
+    all = all.concat(chunk as SyncContact[]);
+    if (chunk.length < PAGE) break;
+  }
+  return NextResponse.json({ contacts: all });
 }
 
 // POST — bulk update last_meaningful_contact after Gmail sync
@@ -27,13 +38,13 @@ export async function POST(request: NextRequest) {
     const skipped: { id: string; reason: string }[] = [];
 
     for (const update of updates) {
-      const { id, last_meaningful_contact, note } = update;
-      if (!id || !last_meaningful_contact) continue;
+      const { id, last_meaningful_contact, note, phone, contact_quality } = update;
+      if (!id) continue;
 
       // Fetch current record to compare dates and append notes safely
       const { data: current } = await supabase
         .from("contacts")
-        .select("id, name, last_meaningful_contact, notes")
+        .select("id, name, last_meaningful_contact, notes, phone, contact_quality")
         .eq("id", id)
         .single();
 
@@ -42,21 +53,36 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // Skip if existing date is already the same or more recent
-      if (current.last_meaningful_contact >= last_meaningful_contact) {
-        skipped.push({ id, reason: "already up to date" });
-        continue;
+      const patch: Record<string, string | number> = { updated_at: new Date().toISOString() };
+
+      // Date update — only move forward, never backward
+      if (last_meaningful_contact) {
+        if (!current.last_meaningful_contact || current.last_meaningful_contact < last_meaningful_contact) {
+          patch.last_meaningful_contact = last_meaningful_contact;
+        }
       }
 
-      const patch: Record<string, string> = {
-        last_meaningful_contact,
-        updated_at: new Date().toISOString(),
-      };
+      // Phone backfill — only set if currently null (never overwrite user-entered data)
+      if (phone && !current.phone) {
+        patch.phone = phone;
+      }
 
-      if (note) {
+      // Quality upgrade — only move upward from null, never downgrade
+      if (contact_quality && !current.contact_quality) {
+        patch.contact_quality = contact_quality;
+      }
+
+      // Append note if provided
+      if (note && last_meaningful_contact) {
         patch.notes = current.notes
           ? `${current.notes}\n[${last_meaningful_contact}] ${note}`
           : `[${last_meaningful_contact}] ${note}`;
+      }
+
+      // Skip if nothing would change
+      if (Object.keys(patch).length === 1) {
+        skipped.push({ id, reason: "already up to date" });
+        continue;
       }
 
       const { data, error } = await supabase

@@ -21,6 +21,7 @@ create table contacts (
   last_meaningful_contact date,
   notes text,
   email text,
+  phone text,                          -- E.164 format preferred (e.g. +14155551234)
   linkedin_url text,
   contact_quality integer check (contact_quality in (1, 2, 3)), -- 1=noise, 2=weak tie, 3=real relationship
   follow_up boolean default false,   -- true = needs follow-up
@@ -42,6 +43,7 @@ create unique index if not exists idx_contacts_linkedin_unique
 create index if not exists idx_contacts_city     on contacts (lower(city));
 create index if not exists idx_contacts_country  on contacts (lower(country));
 create index if not exists idx_contacts_quality  on contacts (contact_quality);
+create index if not exists idx_contacts_phone    on contacts (phone) where phone is not null;
 create index if not exists idx_contacts_topics   on contacts using gin (topics);
 create index if not exists idx_signals_captured  on signals (captured_at desc);
 create index if not exists idx_signals_topics    on signals using gin (topics);

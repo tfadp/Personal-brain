@@ -21,6 +21,7 @@ export interface Contact {
   last_meaningful_contact: string | null;
   notes: string | null;
   email: string | null;
+  phone: string | null;            // E.164 format preferred (e.g. +14155551234)
   linkedin_url: string | null;
   contact_quality: number | null;   // 1=noise, 2=weak tie, 3=real relationship
   follow_up: boolean | null;        // true = waiting to hear from you
