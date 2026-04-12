@@ -1,5 +1,19 @@
 # Cortex — Lessons Learned
 
+## 2026-04-12
+
+### L26 — Hardcoded alias maps can never be complete — use LLM expansion
+**Problem:** The search system maintained 200+ lines of hardcoded alias maps (SEARCH_ALIASES, CITY_ALIASES, ROLE_TERMS). "Recruiting" didn't map to HR. "Brooklyn" didn't map to NYC. "Deal flow" didn't map to investing. Every new concept required manual additions.
+**Fix:** Replaced all alias maps with a single Claude call (`expand_query`) that thinks like a human. "Recruiting" → HR, talent, staffing, headhunter. "Brooklyn" → NYC, New York. One function, ~100 tokens, ~200ms. Removed 223 lines of code.
+**Rule:** When the enumeration of relationships between concepts is unbounded, don't try to hardcode it. Ask an LLM to do the expansion. A fast classification/expansion call is cheap and eliminates an entire class of bugs.
+
+### L27 — max_tokens truncation returns valid-looking empty results
+**Problem:** The semantic contact ranker (2048 max_tokens) was returning `[]` for "sports media" — looked like no results, but actually the response was truncated (`stop_reason: max_tokens`) mid-JSON. The parse fallback couldn't recover the partial array, so it returned empty. Diagnosed by logging `stop_reason`.
+**Fix:** Raised to 4096. Also trimmed the candidate payload to essential fields (id, name, role, company, city, topics, quality) to reduce input token count.
+**Rule:** Same as L20 — always check `stop_reason` when debugging empty LLM responses. "No results" and "truncated response" look identical from the outside.
+
+---
+
 ## 2026-04-10/11
 
 ### L20 — max_tokens silently truncates bulk LLM output

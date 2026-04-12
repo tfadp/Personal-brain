@@ -43,8 +43,9 @@ env.example                      — required environment variables
 - Check .claude/SPECS.md ONLY when modifying naming, schemas, or contracts.
   Do NOT load SPECS.md at session start.
 - No authentication — this is personal, local use only.
-- Structured queries (city, role, topic) hit DB directly — no Claude. Only semantic/fuzzy queries use LLM ranking.
-- Pre-filter to ≤100-200 candidates in Postgres before any Claude ranking call.
+- All contact searches use Claude query expansion first (expand_query): "recruiting" → HR, talent, staffing; "Brooklyn" → NYC. No hardcoded alias maps.
+- Role/industry queries always go through Claude semantic ranking. Pure location queries can use direct DB results.
+- Pre-filter to ≤250 candidates in Postgres before any Claude ranking call.
 - Results always show: name, role, company, city, strength, topics, last contact, notes.
 - READ the file before proposing to add something to it — it may already exist.
 - Extract shared business logic to src/lib/ — never duplicate across route handlers.
