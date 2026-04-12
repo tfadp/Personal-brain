@@ -85,8 +85,6 @@ const SLIM_FIELDS = [
 
 const SEARCH_FIELDS = ["company", "role", "city", "country", "how_you_know_them", "notes"] as const;
 const SIGNAL_SEARCH_FIELDS = ["summary", "source_title"] as const;
-const DIRECT_RESULT_LIMIT = 5000;
-const SEMANTIC_CANDIDATE_LIMIT = 250;
 
 const SEARCH_STOP_WORDS = new Set([
   "who", "what", "where", "when", "why", "how", "know", "people", "person",
@@ -99,72 +97,58 @@ const SEARCH_STOP_WORDS = new Set([
   "with", "from", "have", "they", "all", "any", "the", "and", "for", "you",
 ]);
 
-const SHORT_SEARCH_TERMS = new Set(["ai", "vc", "pr", "hr"]);
+// ── Query expansion — think like a human, not a keyword matcher ──────────────
+//
+// Instead of maintaining hardcoded alias maps that can never be complete,
+// we ask Claude to expand the user's query into everything a human would
+// think to search for. "Recruiting" → HR, talent, staffing, headhunter.
+// "Brooklyn" → NYC, New York. "Deal flow" → investing, venture, VC.
+//
+// One fast Claude call (~200ms, ~100 tokens) replaces hundreds of aliases.
 
-const SEARCH_ALIASES: Record<string, string[]> = {
-  ai: ["ai", "artificial intelligence", "machine learning", "ml"],
-  hr: ["hr", "human resources", "people operations", "talent"],
-  event: ["event", "events", "experiential"],
-  events: ["event", "events", "experiential"],
-  finance: ["finance", "financial", "banking", "investor", "investment"],
-  investing: ["investing", "investment", "investments", "investor", "venture", "capital"],
-  investment: ["investment", "investments", "investor", "venture", "capital"],
-  investments: ["investment", "investments", "investor", "venture", "capital"],
-  investor: ["investor", "investment", "investing", "venture", "capital"],
-  media: ["media", "publishing", "publisher", "journalist", "content"],
-  sport: ["sport", "sports", "athlete", "athletics"],
-  sports: ["sport", "sports", "athlete", "athletics"],
-  vc: ["vc", "venture", "investor", "investment"],
-};
-
-// Common city abbreviations → expand before searching
-const CITY_ALIASES: Record<string, string[]> = {
-  "los angeles": ["los angeles", "la"],
-  "new york":    ["new york", "nyc", "ny"],
-  "san francisco": ["san francisco", "sf"],
-  "washington":  ["washington", "dc", "d.c."],
-  "chicago":     ["chicago", "chi"],
-  "london":      ["london"],
-  "miami":       ["miami"],
-  "boston":      ["boston"],
-};
-
-function expand_city(term: string): string[] {
-  const t = term.toLowerCase().trim();
-  for (const [canonical, aliases] of Object.entries(CITY_ALIASES)) {
-    if (aliases.includes(t) || t.includes(canonical)) return aliases;
-  }
-  return [t];
+interface ExpandedQuery {
+  search_terms: string[];     // words/phrases to ilike search in text fields
+  location_terms: string[];   // city/neighborhood/metro expansions
+  is_role_query: boolean;     // true if asking about what people DO (needs semantic ranking)
 }
 
-// Structured query patterns — these hit the DB directly, no Claude needed
-const STRUCTURED_PATTERNS: Array<{
-  pattern: RegExp;
-  field: "city" | "country" | "company" | "role";
-  extract: (m: RegExpMatchArray) => string;
-}> = [
-  { pattern: /\bin\s+([a-z][a-z\s]{1,30}?)(?:\?|$|\s+who|\s+that|\s+i)/i,  field: "city",    extract: (m) => m[1].trim() },
-  { pattern: /\bfrom\s+([a-z][a-z\s]{1,30}?)(?:\?|$|\s+who|\s+that)/i,     field: "country", extract: (m) => m[1].trim() },
-  { pattern: /\bat\s+([a-z][a-z\s]{1,30}?)(?:\?|$|\s+who|\s+that)/i,       field: "company", extract: (m) => m[1].trim() },
-  { pattern: /\bwork(?:s|ing)?\s+at\s+([a-z][a-z\s]{1,30}?)(?:\?|$)/i,    field: "company", extract: (m) => m[1].trim() },
-];
+async function expand_query(input: string): Promise<ExpandedQuery> {
+  const res = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 256,
+    messages: [{
+      role: "user",
+      content: `You help search a personal contacts database. Given a query, expand it into search terms a human would think of. Think like a human, not a computer.
 
-// Role/industry queries need LLM understanding — keyword matching fails
-// because "human resources" ≠ "human rights", "sports marketing" ≠ "marketing",
-// "HR" is an abbreviation not a word, etc.
-// These terms trigger the semantic (Claude) path instead of direct DB search.
-const ROLE_TERMS = new Set([
-  "investor", "investors", "vc", "venture", "lawyer", "lawyers", "attorney",
-  "journalist", "reporter", "founder", "ceo", "operator", "hr", "human resources",
-  "marketing", "sales", "engineering", "product", "design", "operations",
-  "finance", "legal", "consulting", "banking", "real estate", "healthcare",
-  "education", "government", "nonprofit", "entertainment", "sports", "media",
-  "tech", "technology", "creative", "strategy", "analytics", "data",
-]);
+Query: "${input}"
 
-interface StructuredResult {
-  type: "direct";
-  results: Contact[];
+Rules:
+- "recruiting" → also search "recruiter", "talent acquisition", "HR", "human resources", "staffing", "headhunter"
+- "Brooklyn" → also search "NYC", "New York" (it's a borough)
+- "VC" → also search "venture capital", "venture", "investor"
+- "sports media" → also search "sports journalism", "sports broadcasting", "sports content"
+- Include the original terms AND all synonyms, related roles, abbreviations, and parent categories
+- For locations: include the metro area, common abbreviations, and neighborhoods/boroughs
+- Decide: is the user asking about what people DO (role/industry) or just looking for a name/city/company?
+
+Return ONLY valid JSON:
+{
+  "search_terms": ["every", "relevant", "search", "term", "including", "originals"],
+  "location_terms": ["city names", "abbreviations", "neighborhoods", "metros"],
+  "is_role_query": true
+}
+
+Keep search_terms under 20 items. Keep location_terms under 10.`,
+    }],
+  });
+  const raw = res.content[0].type === "text" ? res.content[0].text : "{}";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  try {
+    return JSON.parse(clean);
+  } catch {
+    // Fallback: extract manually
+    return { search_terms: extract_contact_search_terms(input), location_terms: [], is_role_query: false };
+  }
 }
 
 function parse_json_array<T>(raw: string): T[] {
@@ -196,29 +180,15 @@ function unique_by_id<T extends { id: string }>(items: T[]): T[] {
   return [...new Map(items.map((item) => [item.id, item])).values()];
 }
 
-function unique_terms(terms: string[]): string[] {
-  return [...new Set(terms.map((term) => term.toLowerCase().trim()).filter(Boolean))];
-}
-
-function expand_search_terms(term: string): string[] {
-  const aliases = SEARCH_ALIASES[term] ?? [];
-  const variants = [term, ...aliases];
-  if (term.endsWith("ies") && term.length > 4) variants.push(`${term.slice(0, -3)}y`);
-  if (term.endsWith("s") && term.length > 3) variants.push(term.slice(0, -1));
-  if (!term.endsWith("s") && term.length > 3) variants.push(`${term}s`);
-  return variants;
-}
-
 function extract_contact_search_terms(input: string): string[] {
-  const raw_terms = input
+  return input
     .toLowerCase()
     .replace(/[^a-z0-9 ]/g, " ")
     .split(/\s+/)
     .filter((word) =>
-      !SEARCH_STOP_WORDS.has(word) &&
-      (word.length > 2 || SHORT_SEARCH_TERMS.has(word))
-    );
-  return unique_terms(raw_terms.flatMap(expand_search_terms)).slice(0, 12);
+      !SEARCH_STOP_WORDS.has(word) && word.length > 2
+    )
+    .slice(0, 10);
 }
 
 function contact_field_text(contact: Contact, field: (typeof SEARCH_FIELDS)[number]): string {
@@ -281,153 +251,64 @@ function rank_direct_contacts(contacts: Contact[], terms: string[]): Contact[] {
 }
 
 /**
- * Try to answer the query directly from the DB without calling Claude.
- * Returns null if the query is semantic and needs LLM ranking.
+ * Fetch candidate contacts using Claude-expanded search terms.
+ * expand_query thinks like a human — "recruiting" → HR, talent, staffing.
+ * "Brooklyn" → NYC, New York. We search with ALL the expanded terms.
  */
-async function try_structured_query(input: string): Promise<StructuredResult | null> {
+async function get_candidates(expanded: ExpandedQuery): Promise<Contact[]> {
   const supabase = getSupabase();
-  const t = input.toLowerCase();
-  const search_terms = extract_contact_search_terms(input);
 
-  // Location match — "who do I know in London" / "who do I know in Los Angeles"
-  for (const p of STRUCTURED_PATTERNS) {
-    const m = input.match(p.pattern);
-    if (m) {
-      const term = p.extract(m);
-      // For city searches, expand aliases (e.g. "los angeles" → also search "la")
-      const terms = p.field === "city" ? expand_city(term) : [term.toLowerCase()];
-      const fields = p.field === "city" ? ["city", "country"] : [p.field];
-      const filters = terms.flatMap((alias) => fields.map((field) => `${field}.ilike.%${alias}%`));
-      const { data } = await supabase
-        .from("contacts")
-        .select(SLIM_FIELDS)
-        .or(filters.join(","))
-        .order("contact_quality", { ascending: false, nullsFirst: false })
-        .limit(DIRECT_RESULT_LIMIT);
-      if (data && data.length > 0) return { type: "direct", results: rank_direct_contacts(as_contacts(data), terms) };
-    }
-  }
+  const all_terms = [...new Set([...expanded.search_terms, ...expanded.location_terms])].filter(Boolean);
+  if (all_terms.length === 0) return [];
 
-  // If the query mentions a role/industry term, skip structured search entirely —
-  // these need LLM understanding ("HR" ≠ "human", "sports marketing" ≠ "marketing")
-  const has_role_term = search_terms.some((w) => ROLE_TERMS.has(w)) ||
-    [...ROLE_TERMS].some((rt) => rt.includes(" ") && t.includes(rt));
-  if (has_role_term) return null;
-
-  if (search_terms.length > 0) {
-    // Industry/topic search should not need Claude. Try text columns first,
-    // then fall back to case-insensitive array matching in app code.
-    const text_filters = search_terms.flatMap((word) =>
-      [`name.ilike.%${word}%`, ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${word}%`)]
-    );
-    const { data: text_matches } = await supabase
-      .from("contacts")
-      .select(SLIM_FIELDS)
-      .or(text_filters.join(","))
-      .order("contact_quality", { ascending: false, nullsFirst: false })
-      .limit(DIRECT_RESULT_LIMIT);
-
-    // Use Postgres array overlap when topic casing matches.
-    const { data } = await supabase
-      .from("contacts")
-      .select(SLIM_FIELDS)
-      .overlaps("topics", search_terms)
-      .order("contact_quality", { ascending: false, nullsFirst: false })
-      .limit(DIRECT_RESULT_LIMIT);
-
-    const { data: topic_candidates } = await supabase
-      .from("contacts")
-      .select(SLIM_FIELDS)
-      .order("contact_quality", { ascending: false, nullsFirst: false })
-      .limit(DIRECT_RESULT_LIMIT);
-    const topic_matches = as_contacts(topic_candidates).filter((contact) =>
-      contact.topics?.some((topic) => {
-        const normalized = topic.toLowerCase();
-        return search_terms.some((word) => normalized.includes(word));
-      }) ?? false
-    );
-
-    const matches = unique_by_id([
-      ...as_contacts(text_matches),
-      ...as_contacts(data),
-      ...topic_matches,
-    ]);
-    if (matches.length > 0) return { type: "direct", results: rank_direct_contacts(matches, search_terms) };
-  }
-
-  return null;
-}
-
-/**
- * Pulls candidate contacts for Claude to rank.
- * For role/industry queries, we need a wide net — keyword matching will miss
- * relevant people (e.g. "HR" won't match "Head of People Operations"),
- * so we pull the top contacts by quality and let Claude do the understanding.
- */
-async function get_semantic_candidates(input: string): Promise<Contact[]> {
-  const supabase = getSupabase();
-  const keywords = extract_contact_search_terms(input).slice(0, 8);
-
-  // Pull keyword-matched candidates from text fields AND topics array
-  let keyword_matches: Contact[] = [];
-  if (keywords.length > 0) {
-    // Expand aliases for DB search (sports → sport, sports, athlete, etc.)
-    const expanded = keywords.flatMap((k) => SEARCH_ALIASES[k] ?? [k]);
-    const unique_terms = [...new Set(expanded)];
-
-    // Text field search (ilike)
-    const filters = unique_terms.flatMap((k) => [
-      `name.ilike.%${k}%`,
-      ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${k}%`),
-    ]);
-    const { data: text_hits } = await supabase
-      .from("contacts")
-      .select(SLIM_FIELDS)
-      .or(filters.join(","))
-      .limit(SEMANTIC_CANDIDATE_LIMIT);
-
-    // Topics array search (overlaps + case-insensitive in-app filter)
-    const { data: topic_exact } = await supabase
-      .from("contacts")
-      .select(SLIM_FIELDS)
-      .overlaps("topics", unique_terms)
-      .limit(SEMANTIC_CANDIDATE_LIMIT);
-
-    // Also do in-app case-insensitive topic matching for the full pool
-    const { data: all_with_topics } = await supabase
-      .from("contacts")
-      .select(SLIM_FIELDS)
-      .not("topics", "is", null)
-      .limit(2000);
-    const topic_fuzzy = as_contacts(all_with_topics).filter((c) =>
-      c.topics?.some((t) => {
-        const tl = t.toLowerCase();
-        return unique_terms.some((term) => tl.includes(term));
-      })
-    );
-
-    keyword_matches = unique_by_id([
-      ...as_contacts(text_hits),
-      ...as_contacts(topic_exact),
-      ...topic_fuzzy,
-    ]);
-  }
-
-  // If keyword search found enough candidates, use those — Claude will filter
-  if (keyword_matches.length >= 10) {
-    return keyword_matches.slice(0, 200);
-  }
-
-  // Not enough keyword hits — supplement with quality contacts so Claude has a
-  // broader pool. But keep the pool manageable so relevant people aren't drowned.
-  const { data: quality_contacts } = await supabase
+  // Text field search (ilike across all searchable columns)
+  const text_filters = all_terms.flatMap((k) => [
+    `name.ilike.%${k}%`,
+    ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${k}%`),
+  ]);
+  const { data: text_hits } = await supabase
     .from("contacts")
     .select(SLIM_FIELDS)
+    .or(text_filters.join(","))
     .order("contact_quality", { ascending: false, nullsFirst: false })
-    .limit(100);
+    .limit(300);
 
-  const combined = unique_by_id([...keyword_matches, ...as_contacts(quality_contacts)]);
-  return combined.slice(0, 200);
+  // Topics array search (Postgres overlaps + case-insensitive in-app filter)
+  const { data: topic_exact } = await supabase
+    .from("contacts")
+    .select(SLIM_FIELDS)
+    .overlaps("topics", all_terms)
+    .limit(200);
+
+  const { data: all_with_topics } = await supabase
+    .from("contacts")
+    .select(SLIM_FIELDS)
+    .not("topics", "is", null)
+    .limit(2000);
+  const topic_fuzzy = as_contacts(all_with_topics).filter((c) =>
+    c.topics?.some((t) => {
+      const tl = t.toLowerCase();
+      return all_terms.some((term) => tl.includes(term));
+    })
+  );
+
+  let candidates = unique_by_id([
+    ...as_contacts(text_hits),
+    ...as_contacts(topic_exact),
+    ...topic_fuzzy,
+  ]);
+
+  // For role queries with few keyword hits, supplement with top-quality contacts
+  if (expanded.is_role_query && candidates.length < 50) {
+    const { data: quality_contacts } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .order("contact_quality", { ascending: false, nullsFirst: false })
+      .limit(100);
+    candidates = unique_by_id([...candidates, ...as_contacts(quality_contacts)]);
+  }
+
+  return candidates.slice(0, 250);
 }
 
 function sort_contacts_three_stars_first<T extends Partial<Contact>>(contacts: T[]): T[] {
@@ -469,15 +350,18 @@ async function handle_query_contacts(input: string) {
     return { type: "contacts", results };
   }
 
-  // Try structured query first — DB only, no Claude
-  const structured = await try_structured_query(input);
-  if (structured) {
-    return { type: "contacts", results: structured.results };
-  }
+  // Ask Claude to expand the query like a human would think about it
+  const expanded = await expand_query(input);
 
-  // Semantic fallback — Claude ranks a slim candidate set
-  const candidates = await get_semantic_candidates(input);
+  // Fetch candidates using the expanded terms
+  const candidates = await get_candidates(expanded);
   if (candidates.length === 0) return { type: "contacts", results: [] };
+
+  // For pure location queries (no role component), return DB results directly
+  if (!expanded.is_role_query && expanded.location_terms.length > 0) {
+    const all_terms = [...expanded.search_terms, ...expanded.location_terms];
+    return { type: "contacts", results: rank_direct_contacts(candidates, all_terms) };
+  }
 
   const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
