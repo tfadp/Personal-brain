@@ -99,10 +99,11 @@ const SEARCH_STOP_WORDS = new Set([
   "with", "from", "have", "they", "all", "any", "the", "and", "for", "you",
 ]);
 
-const SHORT_SEARCH_TERMS = new Set(["ai", "vc", "pr"]);
+const SHORT_SEARCH_TERMS = new Set(["ai", "vc", "pr", "hr"]);
 
 const SEARCH_ALIASES: Record<string, string[]> = {
   ai: ["ai", "artificial intelligence", "machine learning", "ml"],
+  hr: ["hr", "human resources", "people operations", "talent"],
   event: ["event", "events", "experiential"],
   events: ["event", "events", "experiential"],
   finance: ["finance", "financial", "banking", "investor", "investment"],
@@ -148,21 +149,18 @@ const STRUCTURED_PATTERNS: Array<{
   { pattern: /\bwork(?:s|ing)?\s+at\s+([a-z][a-z\s]{1,30}?)(?:\?|$)/i,    field: "company", extract: (m) => m[1].trim() },
 ];
 
-// Role/industry keywords that map to a DB role search
-const ROLE_KEYWORDS: Record<string, string> = {
-  "investor": "investor",
-  "investors": "investor",
-  "vc": "venture",
-  "venture": "venture",
-  "lawyer": "lawyer",
-  "lawyers": "lawyer",
-  "attorney": "attorney",
-  "journalist": "journalist",
-  "reporter": "reporter",
-  "founder": "founder",
-  "ceo": "ceo",
-  "operator": "operator",
-};
+// Role/industry queries need LLM understanding — keyword matching fails
+// because "human resources" ≠ "human rights", "sports marketing" ≠ "marketing",
+// "HR" is an abbreviation not a word, etc.
+// These terms trigger the semantic (Claude) path instead of direct DB search.
+const ROLE_TERMS = new Set([
+  "investor", "investors", "vc", "venture", "lawyer", "lawyers", "attorney",
+  "journalist", "reporter", "founder", "ceo", "operator", "hr", "human resources",
+  "marketing", "sales", "engineering", "product", "design", "operations",
+  "finance", "legal", "consulting", "banking", "real estate", "healthcare",
+  "education", "government", "nonprofit", "entertainment", "sports", "media",
+  "tech", "technology", "creative", "strategy", "analytics", "data",
+]);
 
 interface StructuredResult {
   type: "direct";
@@ -310,18 +308,11 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
     }
   }
 
-  // Role/industry keyword match — "tell me all the lawyers I know"
-  for (const [keyword, term] of Object.entries(ROLE_KEYWORDS)) {
-    if (t.includes(keyword)) {
-      const { data } = await supabase
-        .from("contacts")
-        .select(SLIM_FIELDS)
-        .ilike("role", `%${term}%`)
-        .order("contact_quality", { ascending: false, nullsFirst: false })
-        .limit(DIRECT_RESULT_LIMIT);
-      if (data && data.length > 0) return { type: "direct", results: rank_direct_contacts(as_contacts(data), [term]) };
-    }
-  }
+  // If the query mentions a role/industry term, skip structured search entirely —
+  // these need LLM understanding ("HR" ≠ "human", "sports marketing" ≠ "marketing")
+  const has_role_term = search_terms.some((w) => ROLE_TERMS.has(w)) ||
+    [...ROLE_TERMS].some((rt) => rt.includes(" ") && t.includes(rt));
+  if (has_role_term) return null;
 
   if (search_terms.length > 0) {
     // Industry/topic search should not need Claude. Try text columns first,
@@ -368,34 +359,75 @@ async function try_structured_query(input: string): Promise<StructuredResult | n
 }
 
 /**
- * Pulls ≤100 candidate contacts for semantic queries.
- * Only called when try_structured_query returns null.
+ * Pulls candidate contacts for Claude to rank.
+ * For role/industry queries, we need a wide net — keyword matching will miss
+ * relevant people (e.g. "HR" won't match "Head of People Operations"),
+ * so we pull the top contacts by quality and let Claude do the understanding.
  */
 async function get_semantic_candidates(input: string): Promise<Contact[]> {
   const supabase = getSupabase();
-
   const keywords = extract_contact_search_terms(input).slice(0, 8);
 
+  // Pull keyword-matched candidates from text fields AND topics array
+  let keyword_matches: Contact[] = [];
   if (keywords.length > 0) {
-    const filters = keywords.flatMap((k) => [
+    // Expand aliases for DB search (sports → sport, sports, athlete, etc.)
+    const expanded = keywords.flatMap((k) => SEARCH_ALIASES[k] ?? [k]);
+    const unique_terms = [...new Set(expanded)];
+
+    // Text field search (ilike)
+    const filters = unique_terms.flatMap((k) => [
       `name.ilike.%${k}%`,
       ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${k}%`),
     ]);
-    const { data } = await supabase
+    const { data: text_hits } = await supabase
       .from("contacts")
       .select(SLIM_FIELDS)
       .or(filters.join(","))
       .limit(SEMANTIC_CANDIDATE_LIMIT);
-    if (data && data.length > 0) return as_contacts(data);
+
+    // Topics array search (overlaps + case-insensitive in-app filter)
+    const { data: topic_exact } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .overlaps("topics", unique_terms)
+      .limit(SEMANTIC_CANDIDATE_LIMIT);
+
+    // Also do in-app case-insensitive topic matching for the full pool
+    const { data: all_with_topics } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .not("topics", "is", null)
+      .limit(2000);
+    const topic_fuzzy = as_contacts(all_with_topics).filter((c) =>
+      c.topics?.some((t) => {
+        const tl = t.toLowerCase();
+        return unique_terms.some((term) => tl.includes(term));
+      })
+    );
+
+    keyword_matches = unique_by_id([
+      ...as_contacts(text_hits),
+      ...as_contacts(topic_exact),
+      ...topic_fuzzy,
+    ]);
   }
 
-  // True semantic fallback — recent candidates, Claude will rank
-  const { data } = await supabase
+  // If keyword search found enough candidates, use those — Claude will filter
+  if (keyword_matches.length >= 10) {
+    return keyword_matches.slice(0, 200);
+  }
+
+  // Not enough keyword hits — supplement with quality contacts so Claude has a
+  // broader pool. But keep the pool manageable so relevant people aren't drowned.
+  const { data: quality_contacts } = await supabase
     .from("contacts")
     .select(SLIM_FIELDS)
-    .order("updated_at", { ascending: false })
-    .limit(SEMANTIC_CANDIDATE_LIMIT);
-  return as_contacts(data);
+    .order("contact_quality", { ascending: false, nullsFirst: false })
+    .limit(100);
+
+  const combined = unique_by_id([...keyword_matches, ...as_contacts(quality_contacts)]);
+  return combined.slice(0, 200);
 }
 
 function sort_contacts_three_stars_first<T extends Partial<Contact>>(contacts: T[]): T[] {
@@ -449,23 +481,27 @@ async function handle_query_contacts(input: string) {
 
   const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 1024,
+    max_tokens: 4096,
     messages: [{
       role: "user",
-      content: `You are a personal network assistant. Rank the most relevant contacts for this query.
+      content: `You are a personal network assistant. The user is searching for people in their network.
 
 Query: "${input}"
 
-RULES:
+CRITICAL RULES:
+- Understand the INTENT of the query, not just keywords. "Human resources" means people who work in HR/people ops — NOT anyone whose company has the word "human" in it. "Sports media" means people in sports journalism/broadcasting — not just anyone in sports or anyone in media.
+- "HR" = human resources. "AI" = artificial intelligence. "VC" = venture capital. Understand abbreviations.
+- Only return contacts whose role, company, industry, or expertise ACTUALLY matches what the user is looking for.
+- Be INCLUSIVE — if someone could plausibly work in the space, include them. A VP of Content at a sports company counts for "sports media." A journalist who covers athletics counts. Cast a wide net, then rank by relevance.
 - contact_quality 3 = real relationship, prefer strongly; 1 = noise, surface last
-- Return an empty array if no contacts genuinely match
-- Return up to 10 results
+- If you find even 1 relevant contact, return them. Only return an empty array if truly ZERO contacts are relevant.
+- Return up to 15 results
 
-Contacts:
-${JSON.stringify(candidates, null, 2)}
+Contacts to evaluate (${candidates.length} candidates):
+${JSON.stringify(candidates.map(c => ({ id: c.id, name: c.name, role: c.role, company: c.company, city: c.city, topics: c.topics, contact_quality: c.contact_quality })))}
 
 Return ONLY a valid JSON array:
-[{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "contact_quality": 0, "topics": [], "follow_up": false, "relevance": "one sentence why relevant" }]`,
+[{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "contact_quality": 0, "topics": [], "follow_up": false, "relevance": "one sentence on why this person specifically matches the query" }]`,
     }],
   });
 
