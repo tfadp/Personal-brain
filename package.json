@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "import:imessage": "tsx scripts/import-imessage.ts",
-    "import:calendar": "tsx scripts/import-calendar.ts"
+    "import:calendar": "tsx scripts/import-calendar.ts",
+    "auth:gcal": "tsx scripts/auth-google-calendar.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",

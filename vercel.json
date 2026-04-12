@@ -3,6 +3,10 @@
     {
       "path": "/api/newsletter-sync",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/calendar-sync",
+      "schedule": "15 7 * * *"
     }
   ]
 }
