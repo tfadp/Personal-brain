@@ -929,7 +929,7 @@ Return ONLY valid JSON:
       { last_meaningful_contact: parsed.date },
       `Logged interaction`,
     );
-    if (!result.ok) return { type: "error", message: result.error };
+    if (!result.ok) return { type: "error", message: result.clarify ? "Unexpected clarify" : result.error };
     resolved_contact = result.contact;
   } else {
     const result = await apply_contact_update(
@@ -940,7 +940,7 @@ Return ONLY valid JSON:
     if (!result.ok && result.clarify) {
       return { type: "clarify", message: `Multiple contacts match "${parsed.contact_name}". Which one?`, candidates: result.candidates };
     }
-    if (!result.ok) return { type: "error", message: result.error };
+    if (!result.ok) return { type: "error", message: !result.clarify ? result.error : "Unknown error" };
     resolved_contact = result.contact;
   }
 

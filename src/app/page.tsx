@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { Contact, Signal } from "@/lib/types";
+import { useState, useRef, useEffect } from "react";
+import { Contact, Signal, Interaction } from "@/lib/types";
 
 type ResultType =
   | { type: "contacts"; results: (Contact & { relevance?: string })[] }
@@ -12,14 +12,15 @@ type ResultType =
   | { type: "combined"; core_thesis: string; point_of_view: string[]; implications: string[]; tensions: string[]; missing_information: string[]; takeaway: string; hot_take: string; next_move: string; signals: (Signal & { relevance?: string })[]; contacts: (Contact & { relevance?: string })[] }
   | { type: "added"; action?: string; contact: Contact }
   | { type: "added_bulk"; contacts: Contact[]; action: string }
+  | { type: "logged"; action: string; contact: Contact; interaction: Interaction }
   | { type: "clarify"; message: string; candidates: Pick<Contact, "id" | "name" | "company" | "city">[] }
   | { type: "error"; message: string };
 
 const EXAMPLES = [
   "Who do I know in sports media?",
   "What have I saved about creator monetization?",
+  "Had coffee with Anamitra — talked about AI media",
   "Follow up with Sarah — said let's catch up",
-  "https://youtube.com/watch?v=...",
 ];
 
 export default function Home() {
@@ -29,7 +30,23 @@ export default function Home() {
   const [result, setResult] = useState<ResultType | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [pending_input, setPendingInput] = useState<string>("");
+  const [interactions, setInteractions] = useState<Interaction[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch interaction history when a single contact result is shown
+  useEffect(() => {
+    let contact_id: string | null = null;
+    if (result?.type === "logged") contact_id = result.contact.id;
+    else if (result?.type === "updated") contact_id = result.contact.id;
+    else if (result?.type === "contacts" && result.results.length === 1) contact_id = result.results[0].id;
+
+    if (!contact_id) { setInteractions([]); return; }
+
+    fetch(`/api/interactions?contact_id=${contact_id}`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((d) => setInteractions(Array.isArray(d) ? d : []))
+      .catch(() => setInteractions([]));
+  }, [result]);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
@@ -260,6 +277,30 @@ export default function Home() {
           {result.type === "updated" && (
             <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg">
               <p className="text-zinc-700 text-sm">✓ {result.action}</p>
+            </div>
+          )}
+
+          {/* Logged interaction */}
+          {result.type === "logged" && (
+            <div className="space-y-3">
+              <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                <p className="text-green-800 text-sm font-medium">✓ {result.action}</p>
+                {result.interaction.summary && (
+                  <p className="text-green-900 text-sm mt-1">{result.interaction.summary}</p>
+                )}
+                {result.interaction.topics && result.interaction.topics.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {result.interaction.topics.map((t) => (
+                      <span key={t} className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">{t}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <span>{result.contact.name}</span>
+                {result.contact.company && <><span>·</span><span>{result.contact.company}</span></>}
+                <a href={`/contacts?edit=${result.contact.id}`} className="text-zinc-400 hover:text-zinc-700 underline ml-auto">View contact</a>
+              </div>
             </div>
           )}
 
@@ -555,6 +596,34 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          )}
+
+          {/* Interaction history — shows after logged/updated/single-contact results */}
+          {interactions.length > 0 && (
+            <details className="mt-4 group" open={result?.type === "logged"}>
+              <summary className="text-xs text-zinc-400 cursor-pointer hover:text-zinc-600 list-none flex items-center gap-1">
+                <span className="group-open:hidden">▸</span>
+                <span className="hidden group-open:inline">▾</span>
+                {interactions.length} interaction{interactions.length > 1 ? "s" : ""} logged
+              </summary>
+              <div className="mt-3 space-y-2 pl-3 border-l border-zinc-200">
+                {interactions.map((ix) => (
+                  <div key={ix.id} className="text-sm">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-xs text-zinc-400 flex-shrink-0">{ix.date}</span>
+                      <span className="text-zinc-700">{ix.summary ?? ix.raw_content}</span>
+                    </div>
+                    {ix.topics && ix.topics.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1 ml-16">
+                        {ix.topics.map((t) => (
+                          <span key={t} className="text-xs bg-zinc-100 text-zinc-400 px-1.5 py-0.5 rounded">{t}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
           )}
 
         </div>
