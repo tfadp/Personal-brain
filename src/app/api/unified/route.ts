@@ -493,35 +493,107 @@ async function handle_query_signals(input: string) {
 
   if (all.length === 0) return { type: "signals", results: [] };
 
-  const rank_res = await anthropic.messages.create({
+  // Synthesize — form a point of view, don't just list articles
+  const synthesis_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{
       role: "user",
-      content: `You are a personal knowledge assistant. Find the most relevant saved knowledge items.
+      content: `You are Cortex — the user's personal synthesis engine. You have read everything they have saved. You think for yourself. You form opinions. You do NOT summarize articles.
 
-Question: "${input}"
+The user is asking: "${input}"
 
-Saved knowledge: ${JSON.stringify(all, null, 2)}
+Everything they have saved on this topic:
+${JSON.stringify(all, null, 2)}
 
-Return ONLY a valid JSON array, up to 8 results:
-[{ "id": "...", "summary": "...", "topics": [...], "source_title": "...", "captured_at": "...", "relevance": "one sentence why relevant" }]
+Your job is to SYNTHESIZE, not to catalogue. Think across the full set and form a real point of view.
 
-Only include genuinely relevant items.`,
+Rules:
+- Do NOT produce a source-by-source summary
+- Do NOT merely list recurring themes
+- Identify the deepest recurring patterns
+- Find non-obvious connections across items
+- Notice contradictions, edge cases, and second-order effects
+- Separate durable signal from hype, repetition, and noise
+- Form a real judgment — be direct and opinionated
+- If the material is too thin or contradictory, say so
+- If a conclusion is an inference, label it as an inference
+
+Return ONLY valid JSON:
+{
+  "core_thesis": "1 tight paragraph answering: what do these materials collectively suggest is true?",
+  "point_of_view": [
+    "specific, non-generic, judgmental insight grounded in the material",
+    "specific, non-generic, judgmental insight grounded in the material",
+    "specific, non-generic, judgmental insight grounded in the material",
+    "specific, non-generic, judgmental insight grounded in the material"
+  ],
+  "implications": [
+    "what this means for operators and builders",
+    "what this means for investors and strategists",
+    "what this means about timing or market direction"
+  ],
+  "tensions": [
+    "what does not fully fit the thesis",
+    "where the evidence conflicts",
+    "what could make this synthesis wrong"
+  ],
+  "missing_information": [
+    "important question the material does not answer",
+    "important question the material does not answer",
+    "important question the material does not answer"
+  ],
+  "takeaway": "one crisp sentence — the most memorable version of the thesis",
+  "hot_take": "a stronger, more provocative version of the same conclusion",
+  "next_move": "the single most important action — what to decide, find out, or do next",
+  "signal_ids": ["up to 6 signal IDs that most informed your view — evidence, not a reading list"]
+}`,
     }],
   });
 
-  const rank_raw = rank_res.content[0].type === "text" ? rank_res.content[0].text : "[]";
-  let ranked = parse_json_array<Partial<Signal> & { relevance?: string }>(rank_raw);
+  const raw = synthesis_res.content[0].type === "text" ? synthesis_res.content[0].text : "{}";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  let parsed: {
+    core_thesis: string;
+    point_of_view: string[];
+    implications: string[];
+    tensions: string[];
+    missing_information: string[];
+    takeaway: string;
+    hot_take: string;
+    next_move: string;
+    signal_ids: string[];
+  };
+  try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not synthesize results." }; }
 
-  // Fetch full records for the matched IDs (source_url not included in candidate query)
-  const ids = ranked.map((r) => r.id).filter(Boolean);
-  if (ids.length === 0) return { type: "signals", results: [] };
-  const { data: full } = await supabase.from("signals").select("*").in("id", ids);
-  const by_id = Object.fromEntries((full ?? []).map((s: Signal) => [s.id, s]));
-  ranked = ranked.map((r) => ({ ...by_id[r.id as string], relevance: r.relevance }));
+  // Fetch full signal records for footnotes
+  const sig_by_id = Object.fromEntries(all.map((s) => [s.id, s]));
+  const signals = (parsed.signal_ids ?? []).map((id) => sig_by_id[id]).filter(Boolean);
 
-  return { type: "signals", results: ranked };
+  // Fetch full records with source_url
+  const ids = signals.map((s) => s.id).filter(Boolean);
+  let full_signals = signals;
+  if (ids.length > 0) {
+    const { data: full } = await supabase.from("signals").select("*").in("id", ids);
+    if (full) {
+      const full_by_id = Object.fromEntries(full.map((s: Signal) => [s.id, s]));
+      full_signals = ids.map((id) => full_by_id[id]).filter(Boolean);
+    }
+  }
+
+  return {
+    type: "combined",
+    core_thesis: parsed.core_thesis,
+    point_of_view: parsed.point_of_view ?? [],
+    implications: parsed.implications ?? [],
+    tensions: parsed.tensions ?? [],
+    missing_information: parsed.missing_information ?? [],
+    takeaway: parsed.takeaway,
+    hot_take: parsed.hot_take,
+    next_move: parsed.next_move,
+    signals: full_signals,
+    contacts: [],
+  };
 }
 
 async function handle_query_combined(input: string) {
