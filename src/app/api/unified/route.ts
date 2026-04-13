@@ -359,19 +359,21 @@ async function handle_query_contacts(input: string) {
     return { type: "contacts", results };
   }
 
-  // Ask Claude to expand the query like a human would think about it
-  const expanded = await expand_query(input);
+  // Single Claude call: expand the query AND rank candidates in one pass.
+  // This replaces the old 2-call flow (expand_query → get_candidates → rank)
+  // which took 30-60s. Now it's one call that does both.
 
-  // Fetch candidates using the expanded terms
-  const candidates = await get_candidates(expanded);
-  if (candidates.length === 0) return { type: "contacts", results: [] };
+  // Step 1: Get a broad candidate set from the DB using basic keyword extraction
+  const basic_terms = extract_contact_search_terms(input);
+  const supabase_candidates = await get_candidates({
+    search_terms: basic_terms,
+    location_terms: basic_terms,
+    is_role_query: true, // always supplement with quality contacts
+  });
 
-  // For pure location queries (no role component), return DB results directly
-  if (!expanded.is_role_query && expanded.location_terms.length > 0) {
-    const all_terms = [...expanded.search_terms, ...expanded.location_terms];
-    return { type: "contacts", results: rank_direct_contacts(candidates, all_terms) };
-  }
+  if (supabase_candidates.length === 0) return { type: "contacts", results: [] };
 
+  // Step 2: One Claude call — understands the query, expands it mentally, ranks
   const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 4096,
@@ -381,20 +383,28 @@ async function handle_query_contacts(input: string) {
 
 Query: "${input}"
 
-CRITICAL RULES:
-- Understand the INTENT of the query, not just keywords. "Human resources" means people who work in HR/people ops — NOT anyone whose company has the word "human" in it. "Sports media" means people in sports journalism/broadcasting — not just anyone in sports or anyone in media.
-- "HR" = human resources. "AI" = artificial intelligence. "VC" = venture capital. Understand abbreviations.
-- Only return contacts whose role, company, industry, or expertise ACTUALLY matches what the user is looking for.
-- Be INCLUSIVE — if someone could plausibly work in the space, include them. A VP of Content at a sports company counts for "sports media." A journalist who covers athletics counts. Cast a wide net, then rank by relevance.
-- contact_quality 3 = real relationship, prefer strongly; 1 = noise, surface last
-- If you find even 1 relevant contact, return them. Only return an empty array if truly ZERO contacts are relevant.
+YOUR JOB: Think like a human about what this query means, then find the matching people.
+
+THINK ABOUT THE QUERY:
+- "recruiting" = HR, talent acquisition, headhunter, staffing, people ops
+- "Brooklyn" = also NYC, New York (it's a borough)
+- "deal flow" = investing, venture capital, sourcing
+- "sports media" = sports journalism, broadcasting, content in sports — not just sports OR media separately
+- Expand abbreviations: HR, AI, VC, PR, etc.
+- Understand context: someone at a recruiting firm counts even if their title says "Partner"
+
+THEN RANK:
+- Only return people who ACTUALLY match the expanded meaning
+- Be INCLUSIVE — if someone plausibly works in the space, include them
+- contact_quality 3 = real relationship, prefer strongly; 1 = noise, rank last
+- If even 1 contact matches, return them. Only return [] if truly ZERO are relevant.
 - Return up to 15 results
 
-Contacts to evaluate (${candidates.length} candidates):
-${JSON.stringify(candidates.map(c => ({ id: c.id, name: c.name, role: c.role, company: c.company, city: c.city, topics: c.topics, contact_quality: c.contact_quality })))}
+Contacts (${supabase_candidates.length}):
+${JSON.stringify(supabase_candidates.map(c => ({ id: c.id, name: c.name, role: c.role, company: c.company, city: c.city, topics: c.topics, contact_quality: c.contact_quality })))}
 
 Return ONLY a valid JSON array:
-[{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "contact_quality": 0, "topics": [], "follow_up": false, "relevance": "one sentence on why this person specifically matches the query" }]`,
+[{ "id": "...", "name": "...", "company": "...", "role": "...", "city": "...", "country": "...", "contact_quality": 0, "topics": [], "follow_up": false, "relevance": "one sentence why" }]`,
     }],
   });
 
