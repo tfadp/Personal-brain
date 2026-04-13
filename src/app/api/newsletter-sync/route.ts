@@ -198,7 +198,7 @@ async function already_ingested(gmail_message_id: string): Promise<boolean> {
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 
-export async function GET() {
+export async function GET(request: Request) {
   // Vercel cron sends a GET with a secret header — verify it
   // (Vercel automatically adds CRON_SECRET to cron requests)
   // We skip verification in dev but enforce in production via env
@@ -213,8 +213,10 @@ export async function GET() {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 
-  // Look back 48 hours — daily cron with overlap so nothing is missed
-  const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  // Look back window — daily cron uses 48h, manual hit with ?days=N overrides
+  const url = new URL(request.url);
+  const days_back = parseInt(url.searchParams.get("days") ?? "2", 10);
+  const since = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000);
   const after_date = `${since.getFullYear()}/${String(since.getMonth() + 1).padStart(2, "0")}/${String(since.getDate()).padStart(2, "0")}`;
 
   const results: Record<string, { processed: number; skipped: number; signals_saved: number }> = {};
@@ -285,7 +287,7 @@ export async function GET() {
     ok: true,
     total_signals_saved: total_signals,
     by_sender: results,
-    window_hours: 48,
+    window: `${days_back} days (since ${after_date})`,
     run_at: new Date().toISOString(),
   });
 }
