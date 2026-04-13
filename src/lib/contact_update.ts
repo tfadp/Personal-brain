@@ -89,25 +89,50 @@ export async function apply_contact_update(
     matches = data ?? [];
   }
 
-  if (matches.length === 0) {
+  if (!matches || matches.length === 0) {
     return { ok: false, clarify: false, error: `No contact found matching "${contact_name}".` };
   }
 
-  // Multiple plausible matches — ask the caller to clarify rather than mutating the wrong person
-  if (matches.length > 1) {
-    return {
-      ok: false,
-      clarify: true,
-      candidates: matches.map((c) => ({
-        id: c.id,
-        name: c.name,
-        company: c.company,
-        city: c.city,
-      })),
-    };
+  // From here, matches is guaranteed non-null with ≥1 element
+  let resolved_matches: Contact[] = matches;
+
+  // Multiple matches — but if they're clearly the same person, pick the most complete record
+  if (resolved_matches.length > 1) {
+    const first = resolved_matches[0];
+    const same_person = resolved_matches.every((m) => {
+      const name_a = first.name.toLowerCase().split(/\s+/);
+      const name_b = m.name.toLowerCase().split(/\s+/);
+      // Same first name, and companies overlap or one is a substring of the other
+      const same_first = name_a[0] === name_b[0];
+      const company_a = (first.company ?? "").toLowerCase();
+      const company_b = (m.company ?? "").toLowerCase();
+      const same_company = !company_a || !company_b || company_a.includes(company_b) || company_b.includes(company_a);
+      return same_first && same_company;
+    });
+
+    if (same_person) {
+      // Pick the record with the most filled-in fields
+      const scored = resolved_matches.map((m) => ({
+        contact: m,
+        score: Object.values(m).filter((v) => v !== null && v !== undefined && v !== "").length,
+      }));
+      scored.sort((a, b) => b.score - a.score);
+      resolved_matches = [scored[0].contact];
+    } else {
+      return {
+        ok: false,
+        clarify: true,
+        candidates: resolved_matches.map((c) => ({
+          id: c.id,
+          name: c.name,
+          company: c.company,
+          city: c.city,
+        })),
+      };
+    }
   }
 
-  const contact = matches[0];
+  const contact = resolved_matches[0];
 
   // Merge updates
   const final: Partial<Contact> = { ...updates };

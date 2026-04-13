@@ -40,7 +40,8 @@ function fast_intent(input: string): Intent | null {
   if (/\b(find|show me|list) (contacts?|people|someone|connections?)\b/.test(t)) return "query_contacts";
   if (/\bwhat (do i know about|have i (saved|read)|did i save)\b/.test(t)) return "query_signals";
   if (/\bwhat.{0,30}\b(saved|in my brain)\b/.test(t)) return "query_signals";
-  if (/\bfollow.?up with\b/.test(t)) return "update_contact";
+  if (/\bfollow.?up (with|on)\b/.test(t)) return "update_contact";
+  if (/\b(add|put|set).{1,30}(to |for |on )follow.?up\b/.test(t)) return "update_contact";
   if (/\b(just (met|spoke|talked|texted|emailed|called)|caught up with)\b/.test(t)) return "update_contact";
   // Any mention of follow-up/marking in a multi-line input = bulk update, not add
   // This must come before the email-list heuristic which would otherwise fire first
