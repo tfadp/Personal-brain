@@ -56,6 +56,25 @@ create index if not exists idx_contacts_role_trgm    on contacts using gin (role
 create index if not exists idx_contacts_city_trgm    on contacts using gin (city gin_trgm_ops);
 create index if not exists idx_contacts_country_trgm on contacts using gin (country gin_trgm_ops);
 
+-- ── Interactions ──────────────────────────────────────────────────────────────
+-- Timestamped log of every touchpoint with a contact.
+-- Raw content is always preserved; summary + topics are Claude-extracted.
+
+create table if not exists interactions (
+  id uuid default gen_random_uuid() primary key,
+  contact_id uuid not null references contacts(id) on delete cascade,
+  date date not null default current_date,
+  source text not null default 'manual', -- manual | email | voice | screenshot
+  raw_content text not null,
+  summary text,
+  topics text[],
+  created_at timestamptz default now()
+);
+
+create index if not exists interactions_contact_id_idx on interactions (contact_id);
+create index if not exists interactions_date_idx       on interactions (date desc);
+create index if not exists interactions_topics_idx     on interactions using gin (topics);
+
 -- ── One-time city normalization (run manually in Supabase SQL editor) ─────────
 -- Normalises common abbreviations so location queries return consistent results.
 -- Preview first with SELECT before running the UPDATEs.

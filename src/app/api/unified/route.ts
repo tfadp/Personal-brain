@@ -16,10 +16,11 @@ type Intent =
   | "query_combined"
   | "ingest_signal"
   | "update_contact"
-  | "add_contact";
+  | "add_contact"
+  | "log_interaction";
 
 const VALID_INTENTS: Intent[] = [
-  "query_contacts", "query_signals", "query_combined", "ingest_signal", "update_contact", "add_contact",
+  "query_contacts", "query_signals", "query_combined", "ingest_signal", "update_contact", "add_contact", "log_interaction",
 ];
 
 // Fast heuristic — handles the obvious cases without a Claude round-trip.
@@ -40,6 +41,10 @@ function fast_intent(input: string): Intent | null {
   if (/\b(find|show me|list) (contacts?|people|someone|connections?)\b/.test(t)) return "query_contacts";
   if (/\bwhat (do i know about|have i (saved|read)|did i save)\b/.test(t)) return "query_signals";
   if (/\bwhat.{0,30}\b(saved|in my brain)\b/.test(t)) return "query_signals";
+  // log_interaction: describing an interaction with a topic — must precede plain update_contact patterns
+  if (/\b(talked|spoke|met|discussed|chatted|caught up).{0,80}\babout\b/i.test(t)) return "log_interaction";
+  if (/\b(today|yesterday|this morning|this week)\b.{0,60}\b(talked|spoke|met|called|discussed|had (coffee|lunch|a call|a meeting))\b/i.test(t)) return "log_interaction";
+  if (/\bhad (coffee|lunch|dinner|a call|a meeting) with\b/i.test(t)) return "log_interaction";
   if (/\bfollow.?up (with|on)\b/.test(t)) return "update_contact";
   if (/\b(add|put|set).{1,30}(to |for |on )follow.?up\b/.test(t)) return "update_contact";
   if (/\b(just (met|spoke|talked|texted|emailed|called)|caught up with)\b/.test(t)) return "update_contact";
@@ -65,7 +70,10 @@ async function classify_intent(input: string): Promise<Intent> {
     messages: [{
       role: "user",
       content: `Classify this input for a personal contacts + knowledge app. Return ONLY one of these exact strings:
-query_contacts | query_signals | ingest_signal | update_contact | add_contact
+query_contacts | query_signals | ingest_signal | update_contact | add_contact | log_interaction
+
+log_interaction = user describing a meeting, call, or conversation with a specific person that should be logged to their history (e.g. "talked to X about Y", "had coffee with X", "met X at Z")
+update_contact = changing a contact field or marking follow-up (e.g. "mark X for follow-up", "X moved to Goldman")
 
 Input: "${input}"`,
     }],
@@ -874,6 +882,91 @@ Omit fields that are null — only include fields with actual values:
   };
 }
 
+// ── Log interaction handler ───────────────────────────────────────────────────
+
+async function handle_log_interaction(input: string, contact_id?: string) {
+  const today = new Date().toISOString().split("T")[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+
+  const parse_res = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 512,
+    messages: [{
+      role: "user",
+      content: `Parse this personal note about an interaction with someone in my network.
+Today: ${today}
+Yesterday: ${yesterday}
+
+Input: "${input}"
+
+Return ONLY valid JSON:
+{
+  "contact_name": "the person's name",
+  "summary": "one sentence: what happened in this interaction",
+  "topics": ["2-4 relevant topic tags"],
+  "date": "YYYY-MM-DD — infer from 'today', 'yesterday', 'this morning' etc., default to today"
+}`,
+    }],
+  });
+
+  const raw = parse_res.content[0].type === "text" ? parse_res.content[0].text : "{}";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+
+  let parsed: { contact_name: string; summary: string; topics: string[]; date: string };
+  try { parsed = JSON.parse(clean); }
+  catch { return { type: "error", message: "Could not parse that interaction." }; }
+
+  if (!parsed.contact_name?.trim()) {
+    return { type: "error", message: "Could not identify who this interaction was with." };
+  }
+
+  const supabase = getSupabase();
+  let resolved_contact;
+
+  if (contact_id) {
+    const result = await apply_contact_update_by_id(
+      contact_id,
+      { last_meaningful_contact: parsed.date },
+      `Logged interaction`,
+    );
+    if (!result.ok) return { type: "error", message: result.error };
+    resolved_contact = result.contact;
+  } else {
+    const result = await apply_contact_update(
+      parsed.contact_name,
+      { last_meaningful_contact: parsed.date },
+      `Logged interaction with ${parsed.contact_name}`,
+    );
+    if (!result.ok && result.clarify) {
+      return { type: "clarify", message: `Multiple contacts match "${parsed.contact_name}". Which one?`, candidates: result.candidates };
+    }
+    if (!result.ok) return { type: "error", message: result.error };
+    resolved_contact = result.contact;
+  }
+
+  const { data: interaction, error } = await supabase
+    .from("interactions")
+    .insert({
+      contact_id: resolved_contact.id,
+      date: parsed.date,
+      source: "manual",
+      raw_content: input.trim(),
+      summary: parsed.summary,
+      topics: parsed.topics,
+    })
+    .select()
+    .single();
+
+  if (error) return { type: "error", message: error.message };
+
+  return {
+    type: "logged",
+    interaction,
+    contact: resolved_contact,
+    action: parsed.summary,
+  };
+}
+
 // ── Screenshot handler ───────────────────────────────────────────────────────
 
 function normalize_image_type(file_type: string): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
@@ -999,12 +1092,13 @@ If it is not a text/messaging screenshot, return:
 // ── Main route — SSE streaming ───────────────────────────────────────────────
 
 const INTENT_STATUS: Record<string, string> = {
-  query_contacts: "Searching your contacts...",
-  query_signals:  "Searching your brain...",
-  query_combined: "Connecting your research and contacts...",
-  ingest_signal:  "Saving to your brain...",
-  update_contact: "Updating contact...",
-  add_contact:    "Adding contact...",
+  query_contacts:  "Searching your contacts...",
+  query_signals:   "Searching your brain...",
+  query_combined:  "Connecting your research and contacts...",
+  ingest_signal:   "Saving to your brain...",
+  update_contact:  "Updating contact...",
+  add_contact:     "Adding contact...",
+  log_interaction: "Logging interaction...",
 };
 
 export async function POST(request: NextRequest) {
@@ -1047,9 +1141,10 @@ export async function POST(request: NextRequest) {
           case "query_contacts": send(await handle_query_contacts(input)); break;
           case "query_signals":  send(await handle_query_signals(input)); break;
           case "query_combined": send(await handle_query_combined(input)); break;
-          case "ingest_signal":  send(await handle_ingest_signal(input)); break;
-          case "update_contact": send(await handle_update_contact(input, contact_id)); break;
-          case "add_contact":    send(await handle_add_contact(input)); break;
+          case "ingest_signal":   send(await handle_ingest_signal(input)); break;
+          case "update_contact":  send(await handle_update_contact(input, contact_id)); break;
+          case "add_contact":     send(await handle_add_contact(input)); break;
+          case "log_interaction": send(await handle_log_interaction(input, contact_id)); break;
           default: send({ type: "error", message: "Could not understand that." });
         }
       } catch (err) {

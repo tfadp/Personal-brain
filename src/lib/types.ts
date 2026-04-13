@@ -8,6 +8,17 @@ export interface Signal {
   captured_at: string;
 }
 
+export interface Interaction {
+  id: string;
+  contact_id: string;
+  date: string;
+  source: string; // manual | email | voice | screenshot
+  raw_content: string;
+  summary: string | null;
+  topics: string[] | null;
+  created_at: string;
+}
+
 export interface Contact {
   id: string;
   name: string;
