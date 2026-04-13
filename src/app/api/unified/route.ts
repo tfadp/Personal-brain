@@ -94,6 +94,7 @@ const SLIM_FIELDS = [
 
 const SEARCH_FIELDS = ["company", "role", "city", "country", "how_you_know_them", "notes"] as const;
 const SIGNAL_SEARCH_FIELDS = ["summary", "source_title"] as const;
+const SHORT_SEARCH_TERMS = new Set(["ai", "hr", "ml", "pr", "uk", "us", "vc"]);
 
 const SEARCH_STOP_WORDS = new Set([
   "who", "what", "where", "when", "why", "how", "know", "people", "person",
@@ -106,58 +107,40 @@ const SEARCH_STOP_WORDS = new Set([
   "with", "from", "have", "they", "all", "any", "the", "and", "for", "you",
 ]);
 
+const SEARCH_ALIASES: Record<string, string[]> = {
+  ai: ["ai", "artificial intelligence", "machine learning", "ml"],
+  brooklyn: ["brooklyn", "nyc", "new york"],
+  events: ["events", "event", "experiential"],
+  event: ["event", "events", "experiential"],
+  finance: ["finance", "financial", "banking", "investor", "investment"],
+  hr: ["hr", "human resources", "people", "talent", "recruiting", "recruiter", "staffing", "people ops"],
+  investing: ["investing", "investment", "investor", "venture", "venture capital", "deal flow"],
+  media: ["media", "publishing", "publisher", "journalist", "content"],
+  pr: ["pr", "public relations", "communications", "comms"],
+  recruiting: ["recruiting", "recruiter", "talent acquisition", "hr", "human resources", "staffing", "headhunter"],
+  sports: ["sports", "sport", "athlete", "athletics"],
+  vc: ["vc", "venture", "venture capital", "investor", "investment"],
+};
+
+const CITY_ALIASES: Record<string, string[]> = {
+  brooklyn: ["brooklyn", "nyc", "new york"],
+  chicago: ["chicago", "chi"],
+  london: ["london"],
+  los_angeles: ["los angeles", "la"],
+  losangeles: ["los angeles", "la"],
+  miami: ["miami"],
+  newyork: ["new york", "nyc", "ny"],
+  "new york": ["new york", "nyc", "ny"],
+  sf: ["san francisco", "sf"],
+  "san francisco": ["san francisco", "sf"],
+};
+
 // ── Query expansion — think like a human, not a keyword matcher ──────────────
-//
-// Instead of maintaining hardcoded alias maps that can never be complete,
-// we ask Claude to expand the user's query into everything a human would
-// think to search for. "Recruiting" → HR, talent, staffing, headhunter.
-// "Brooklyn" → NYC, New York. "Deal flow" → investing, venture, VC.
-//
-// One fast Claude call (~200ms, ~100 tokens) replaces hundreds of aliases.
 
 interface ExpandedQuery {
   search_terms: string[];     // words/phrases to ilike search in text fields
   location_terms: string[];   // city/neighborhood/metro expansions
   is_role_query: boolean;     // true if asking about what people DO (needs semantic ranking)
-}
-
-async function expand_query(input: string): Promise<ExpandedQuery> {
-  const res = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 256,
-    messages: [{
-      role: "user",
-      content: `You help search a personal contacts database. Given a query, expand it into search terms a human would think of. Think like a human, not a computer.
-
-Query: "${input}"
-
-Rules:
-- "recruiting" → also search "recruiter", "talent acquisition", "HR", "human resources", "staffing", "headhunter"
-- "Brooklyn" → also search "NYC", "New York" (it's a borough)
-- "VC" → also search "venture capital", "venture", "investor"
-- "sports media" → also search "sports journalism", "sports broadcasting", "sports content"
-- Include the original terms AND all synonyms, related roles, abbreviations, and parent categories
-- For locations: include the metro area, common abbreviations, and neighborhoods/boroughs
-- Decide: is the user asking about what people DO (role/industry) or just looking for a name/city/company?
-
-Return ONLY valid JSON:
-{
-  "search_terms": ["every", "relevant", "search", "term", "including", "originals"],
-  "location_terms": ["city names", "abbreviations", "neighborhoods", "metros"],
-  "is_role_query": true
-}
-
-Keep search_terms under 20 items. Keep location_terms under 10.`,
-    }],
-  });
-  const raw = res.content[0].type === "text" ? res.content[0].text : "{}";
-  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  try {
-    return JSON.parse(clean);
-  } catch {
-    // Fallback: extract manually
-    return { search_terms: extract_contact_search_terms(input), location_terms: [], is_role_query: false };
-  }
 }
 
 function parse_json_array<T>(raw: string): T[] {
@@ -189,15 +172,53 @@ function unique_by_id<T extends { id: string }>(items: T[]): T[] {
   return [...new Map(items.map((item) => [item.id, item])).values()];
 }
 
+function unique_terms(terms: string[]): string[] {
+  return [...new Set(terms.map((term) => term.toLowerCase().trim()).filter(Boolean))];
+}
+
 function extract_contact_search_terms(input: string): string[] {
-  return input
+  const raw_terms = input
     .toLowerCase()
     .replace(/[^a-z0-9 ]/g, " ")
     .split(/\s+/)
     .filter((word) =>
-      !SEARCH_STOP_WORDS.has(word) && word.length > 2
+      !SEARCH_STOP_WORDS.has(word) &&
+      (word.length > 2 || SHORT_SEARCH_TERMS.has(word))
+    );
+  return unique_terms(raw_terms).slice(0, 12);
+}
+
+function locally_expand_query(input: string): ExpandedQuery {
+  const base_terms = extract_contact_search_terms(input);
+  const expanded_terms = unique_terms(base_terms.flatMap((term) => [term, ...(SEARCH_ALIASES[term] ?? [])]));
+  const location_terms = unique_terms(
+    expanded_terms.flatMap((term) =>
+      CITY_ALIASES[term] ?? CITY_ALIASES[term.replace(/\b(city|borough)\b/g, "").trim()] ?? []
     )
-    .slice(0, 10);
+  );
+  const lower = input.toLowerCase();
+  const is_role_query =
+    /\b(work|works|working|in|about|around|within)\b/.test(lower) ||
+    /\b(hr|finance|investing|media|sports|events|recruiting|vc|ai|pr)\b/.test(lower);
+
+  return {
+    search_terms: expanded_terms,
+    location_terms,
+    is_role_query,
+  };
+}
+
+function should_use_direct_contact_search(input: string): boolean {
+  const lower = input.toLowerCase().trim();
+  return (
+    /^who do i know\b/.test(lower) ||
+    /^find\b/.test(lower) ||
+    /^show me\b/.test(lower) ||
+    /^list\b/.test(lower) ||
+    /\bworks? in\b/.test(lower) ||
+    /\bworks? at\b/.test(lower) ||
+    /\bin [a-z]/.test(lower)
+  );
 }
 
 function contact_field_text(contact: Contact, field: (typeof SEARCH_FIELDS)[number]): string {
@@ -359,24 +380,25 @@ async function handle_query_contacts(input: string) {
     return { type: "contacts", results };
   }
 
-  // Single Claude call: expand the query AND rank candidates in one pass.
-  // This replaces the old 2-call flow (expand_query → get_candidates → rank)
-  // which took 30-60s. Now it's one call that does both.
-
-  // Step 1: Get a broad candidate set from the DB using basic keyword extraction
-  const basic_terms = extract_contact_search_terms(input);
-  const supabase_candidates = await get_candidates({
-    search_terms: basic_terms,
-    location_terms: basic_terms,
-    is_role_query: true, // always supplement with quality contacts
-  });
+  // Fast path: local query expansion + DB retrieval, no Claude for straightforward queries.
+  const expanded = locally_expand_query(input);
+  const supabase_candidates = await get_candidates(expanded);
 
   if (supabase_candidates.length === 0) return { type: "contacts", results: [] };
 
-  // Step 2: One Claude call — understands the query, expands it mentally, ranks
+  if (should_use_direct_contact_search(input)) {
+    const ranked = rank_direct_contacts(supabase_candidates, [
+      ...expanded.search_terms,
+      ...expanded.location_terms,
+    ]);
+    // Cap direct results — top matches by quality + relevance score
+    return { type: "contacts", results: ranked.slice(0, 30) };
+  }
+
+  // Semantic path: smaller, rarer Claude rerank over bounded DB candidates.
   const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4096,
+    max_tokens: 2048,
     messages: [{
       role: "user",
       content: `You are a personal network assistant. The user is searching for people in their network.

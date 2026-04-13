@@ -159,3 +159,36 @@ M  src/lib/types.ts
 ## One-line summary for next session
 
 > Backend is done (interactions table, API route, log_interaction intent). Only `page.tsx` needs the morning UI: session chips, best match block, interaction log, quick log note form, and the `logged` result type display.
+
+---
+
+## April 13, 2026 — Search speed note
+
+### Root cause
+- The contact-search path had drifted back toward Claude-heavy behavior.
+- Simple discovery queries were still expensive because they were not staying on a pure DB path.
+- Acronym/category queries like `HR` were particularly weak because short terms were getting dropped during extraction.
+
+### Fix
+- Added a local fast-path expander for straightforward contact-search questions.
+- Short category terms like `HR`, `PR`, `VC`, `AI`, plus broader categories like `investing`, `finance`, `media`, `sports`, and `events`, now expand locally before hitting Supabase.
+- Queries like:
+  - `who do I know in hr`
+  - `who do I know that works in hr`
+  - `who do I know in investing`
+  - `who do I know in finance`
+  now bypass Claude entirely and return DB-ranked results.
+- `contact_quality = 3` remains pinned above weaker ties in the final ordering.
+
+### Verification
+- `npm run lint`
+- `npx tsc --noEmit`
+- `npm test`
+- Local smoke tests passed for the four queries above.
+
+### Expected impact
+- This should cut a major chunk of latency for simple contact lookups on Vercel.
+- Remaining slow cases will mostly be:
+  - cold starts
+  - genuinely semantic queries that still need Claude reranking
+  - larger signal/article synthesis queries
