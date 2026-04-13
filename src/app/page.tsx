@@ -139,7 +139,7 @@ export default function Home() {
         {!has_result && !status && (
           <div className="text-center mb-8">
             <h1 className="text-2xl font-light text-zinc-900 mb-2">What&apos;s on your mind?</h1>
-            <p className="text-sm text-zinc-500 font-light">
+            <p className="text-sm text-zinc-600 font-light">
               Ask, save, update, or just think out loud.
             </p>
           </div>
@@ -160,7 +160,7 @@ export default function Home() {
               }}
               placeholder="Ask, save, or update..."
               rows={1}
-              className="w-full bg-transparent px-5 pt-4 pb-12 text-[15px] text-zinc-900 placeholder:text-zinc-500 focus:outline-none resize-none leading-relaxed"
+              className="w-full bg-transparent px-5 pt-4 pb-12 text-[15px] text-zinc-900 placeholder:text-zinc-600 focus:outline-none resize-none leading-relaxed"
             />
             <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -168,7 +168,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="p-1.5 text-zinc-500 hover:text-zinc-700 rounded-lg hover:bg-zinc-100 transition-colors"
+                  className="p-1.5 text-zinc-600 hover:text-zinc-800 rounded-lg hover:bg-zinc-100 transition-colors"
                   title="Attach file (image, PDF, text)"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -176,9 +176,9 @@ export default function Home() {
                   </svg>
                 </button>
                 {attachedFile && (
-                  <span className="flex items-center gap-1 text-xs text-zinc-500 bg-zinc-100 px-2 py-1 rounded-lg">
+                  <span className="flex items-center gap-1 text-xs text-zinc-600 bg-zinc-100 px-2 py-1 rounded-lg">
                     {attachedFile.name}
-                    <button type="button" onClick={() => setAttachedFile(null)} className="text-zinc-500 hover:text-zinc-700">&times;</button>
+                    <button type="button" onClick={() => setAttachedFile(null)} className="text-zinc-600 hover:text-zinc-800">&times;</button>
                   </span>
                 )}
               </div>
@@ -201,7 +201,7 @@ export default function Home() {
                 key={ex}
                 type="button"
                 onClick={() => setInput(ex)}
-                className="text-xs text-zinc-500 hover:text-zinc-700 px-3 py-1.5 rounded-full border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
+                className="text-xs text-zinc-600 hover:text-zinc-800 px-3 py-1.5 rounded-full border border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50 transition-colors"
               >
                 {ex}
               </button>
@@ -211,7 +211,7 @@ export default function Home() {
 
         {/* ── Status ─────────────────────────────────────────────── */}
         {status && (
-          <p className="text-sm text-zinc-500 text-center py-6 animate-pulse">{status}</p>
+          <p className="text-sm text-zinc-600 text-center py-6 animate-pulse">{status}</p>
         )}
 
         {/* ── Results ────────────────────────────────────────────── */}
@@ -241,7 +241,7 @@ export default function Home() {
             {/* Updated contact */}
             {result.type === "updated" && (
               <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl">
-                <p className="text-zinc-700 text-sm">✓ {result.action}</p>
+                <p className="text-zinc-800 text-sm">✓ {result.action}</p>
               </div>
             )}
 
@@ -261,10 +261,10 @@ export default function Home() {
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2 text-xs text-zinc-500">
+                <div className="flex items-center gap-2 text-xs text-zinc-600">
                   <span>{result.contact.name}</span>
                   {result.contact.company && <><span>·</span><span>{result.contact.company}</span></>}
-                  <a href={`/contacts?edit=${result.contact.id}`} className="text-zinc-500 hover:text-zinc-700 underline ml-auto">View contact</a>
+                  <a href={`/contacts?edit=${result.contact.id}`} className="text-zinc-600 hover:text-zinc-800 underline ml-auto">View contact</a>
                 </div>
               </div>
             )}
@@ -272,7 +272,7 @@ export default function Home() {
             {/* Bulk updated contacts */}
             {result.type === "updated_bulk" && (
               <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl">
-                <p className="text-zinc-700 text-sm font-medium mb-2">✓ {result.action}</p>
+                <p className="text-zinc-800 text-sm font-medium mb-2">✓ {result.action}</p>
                 {result.not_found.length > 0 && (
                   <p className="text-xs text-amber-600">Not found: {result.not_found.join(", ")}</p>
                 )}
@@ -282,9 +282,9 @@ export default function Home() {
             {/* Added contact */}
             {result.type === "added" && (
               <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl">
-                <p className="text-zinc-700 text-sm font-medium">✓ {result.action ?? `Added ${result.contact.name}`}</p>
+                <p className="text-zinc-800 text-sm font-medium">✓ {result.action ?? `Added ${result.contact.name}`}</p>
                 {(result.contact.role || result.contact.company) && (
-                  <p className="text-zinc-500 text-sm mt-0.5">{[result.contact.role, result.contact.company].filter(Boolean).join(" at ")}</p>
+                  <p className="text-zinc-600 text-sm mt-0.5">{[result.contact.role, result.contact.company].filter(Boolean).join(" at ")}</p>
                 )}
               </div>
             )}
@@ -292,13 +292,13 @@ export default function Home() {
             {/* Bulk added contacts */}
             {result.type === "added_bulk" && (
               <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl">
-                <p className="text-zinc-700 text-sm font-medium mb-3">✓ {result.action}</p>
+                <p className="text-zinc-800 text-sm font-medium mb-3">✓ {result.action}</p>
                 <div className="space-y-1">
                   {result.contacts.map((c, i) => (
                     <div key={c.id ?? i} className="flex items-baseline gap-2">
                       <span className="text-sm text-zinc-900">{c.name}</span>
-                      {(c.role || c.company) && <span className="text-xs text-zinc-500">{[c.role, c.company].filter(Boolean).join(" at ")}</span>}
-                      {c.email && <span className="text-xs text-zinc-500">{c.email}</span>}
+                      {(c.role || c.company) && <span className="text-xs text-zinc-600">{[c.role, c.company].filter(Boolean).join(" at ")}</span>}
+                      {c.email && <span className="text-xs text-zinc-600">{c.email}</span>}
                     </div>
                   ))}
                 </div>
@@ -319,7 +319,7 @@ export default function Home() {
                     >
                       <span className="font-medium">{c.name}</span>
                       {(c.company || c.city) && (
-                        <span className="text-zinc-500 ml-2">{[c.company, c.city].filter(Boolean).join(", ")}</span>
+                        <span className="text-zinc-600 ml-2">{[c.company, c.city].filter(Boolean).join(", ")}</span>
                       )}
                     </button>
                   ))}
@@ -334,12 +334,12 @@ export default function Home() {
                   <p className="text-base font-medium text-zinc-900 leading-snug">{result.takeaway}</p>
                 )}
                 {result.core_thesis && (
-                  <p className="text-sm text-zinc-700 leading-relaxed">{result.core_thesis}</p>
+                  <p className="text-sm text-zinc-800 leading-relaxed">{result.core_thesis}</p>
                 )}
                 {result.point_of_view?.length > 0 && (
                   <ul className="space-y-2">
                     {result.point_of_view.map((p, i) => (
-                      <li key={i} className="flex gap-2.5 text-sm text-zinc-700">
+                      <li key={i} className="flex gap-2.5 text-sm text-zinc-800">
                         <span className="text-zinc-300 flex-shrink-0">—</span>
                         <span>{p}</span>
                       </li>
@@ -348,7 +348,7 @@ export default function Home() {
                 )}
                 {result.hot_take && (
                   <div className="px-4 py-3 bg-zinc-900 text-white rounded-xl">
-                    <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">Hot take</p>
+                    <p className="text-xs text-zinc-600 uppercase tracking-wide mb-1">Hot take</p>
                     <p className="text-sm leading-relaxed">{result.hot_take}</p>
                   </div>
                 )}
@@ -360,25 +360,25 @@ export default function Home() {
                 )}
                 {result.contacts.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-xs text-zinc-500 uppercase tracking-wide">Who to talk to</p>
+                    <p className="text-xs text-zinc-600 uppercase tracking-wide">Who to talk to</p>
                     {result.contacts.map((c, i) => (
                       <div key={c.id || i} className="flex items-start gap-3 border border-zinc-200 rounded-xl p-3">
                         <span className="text-xs text-zinc-300 font-mono mt-0.5 w-4 flex-shrink-0">{i + 1}</span>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-medium text-sm">{c.name}</span>
-                            <span className="text-xs text-zinc-500">{[c.role, c.company].filter(Boolean).join(" at ")}</span>
+                            <span className="text-xs text-zinc-600">{[c.role, c.company].filter(Boolean).join(" at ")}</span>
                           </div>
-                          {c.relevance && <p className="text-sm text-zinc-500 mt-0.5">{c.relevance}</p>}
+                          {c.relevance && <p className="text-sm text-zinc-600 mt-0.5">{c.relevance}</p>}
                         </div>
-                        <a href={`/contacts?edit=${c.id}`} className="text-xs text-zinc-500 hover:text-zinc-700 border border-zinc-200 hover:border-zinc-400 px-2 py-1 rounded-lg flex-shrink-0">Edit</a>
+                        <a href={`/contacts?edit=${c.id}`} className="text-xs text-zinc-600 hover:text-zinc-800 border border-zinc-200 hover:border-zinc-400 px-2 py-1 rounded-lg flex-shrink-0">Edit</a>
                       </div>
                     ))}
                   </div>
                 )}
                 {(result.implications?.length > 0 || result.tensions?.length > 0 || result.missing_information?.length > 0) && (
                   <details className="group">
-                    <summary className="text-xs text-zinc-500 cursor-pointer hover:text-zinc-700 list-none flex items-center gap-1">
+                    <summary className="text-xs text-zinc-600 cursor-pointer hover:text-zinc-800 list-none flex items-center gap-1">
                       <span className="group-open:hidden">▸</span>
                       <span className="hidden group-open:inline">▾</span>
                       Implications, tensions & gaps
@@ -386,20 +386,20 @@ export default function Home() {
                     <div className="mt-4 space-y-4 pl-3 border-l-2 border-zinc-100">
                       {result.implications?.length > 0 && (
                         <div>
-                          <p className="text-xs text-zinc-500 uppercase tracking-wide mb-2">Implications</p>
-                          <ul className="space-y-1">{result.implications.map((imp, i) => <li key={i} className="text-sm text-zinc-700 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{imp}</li>)}</ul>
+                          <p className="text-xs text-zinc-600 uppercase tracking-wide mb-2">Implications</p>
+                          <ul className="space-y-1">{result.implications.map((imp, i) => <li key={i} className="text-sm text-zinc-800 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{imp}</li>)}</ul>
                         </div>
                       )}
                       {result.tensions?.length > 0 && (
                         <div>
-                          <p className="text-xs text-zinc-500 uppercase tracking-wide mb-2">Tensions</p>
-                          <ul className="space-y-1">{result.tensions.map((t, i) => <li key={i} className="text-sm text-zinc-700 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{t}</li>)}</ul>
+                          <p className="text-xs text-zinc-600 uppercase tracking-wide mb-2">Tensions</p>
+                          <ul className="space-y-1">{result.tensions.map((t, i) => <li key={i} className="text-sm text-zinc-800 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{t}</li>)}</ul>
                         </div>
                       )}
                       {result.missing_information?.length > 0 && (
                         <div>
-                          <p className="text-xs text-zinc-500 uppercase tracking-wide mb-2">Missing information</p>
-                          <ul className="space-y-1">{result.missing_information.map((m, i) => <li key={i} className="text-sm text-zinc-700 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{m}</li>)}</ul>
+                          <p className="text-xs text-zinc-600 uppercase tracking-wide mb-2">Missing information</p>
+                          <ul className="space-y-1">{result.missing_information.map((m, i) => <li key={i} className="text-sm text-zinc-800 flex gap-2"><span className="text-zinc-300 flex-shrink-0">—</span>{m}</li>)}</ul>
                         </div>
                       )}
                     </div>
@@ -407,7 +407,7 @@ export default function Home() {
                 )}
                 {result.signals.length > 0 && (
                   <details className="group">
-                    <summary className="text-xs text-zinc-500 cursor-pointer hover:text-zinc-700 list-none flex items-center gap-1">
+                    <summary className="text-xs text-zinc-600 cursor-pointer hover:text-zinc-800 list-none flex items-center gap-1">
                       <span className="group-open:hidden">▸</span>
                       <span className="hidden group-open:inline">▾</span>
                       {result.signals.length} source{result.signals.length > 1 ? "s" : ""}
@@ -415,10 +415,10 @@ export default function Home() {
                     <div className="mt-3 space-y-2 pl-3 border-l border-zinc-200">
                       {result.signals.map((s) => (
                         <div key={s.id}>
-                          <p className="text-xs text-zinc-500">{s.summary}</p>
+                          <p className="text-xs text-zinc-600">{s.summary}</p>
                           <div className="flex items-center gap-2 mt-0.5">
-                            {s.source_title && <span className="text-xs text-zinc-500">{s.source_title}</span>}
-                            {s.source_url && <a href={s.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-zinc-500 hover:text-zinc-700 underline">↗</a>}
+                            {s.source_title && <span className="text-xs text-zinc-600">{s.source_title}</span>}
+                            {s.source_url && <a href={s.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-zinc-600 hover:text-zinc-800 underline">↗</a>}
                           </div>
                         </div>
                       ))}
@@ -430,11 +430,11 @@ export default function Home() {
 
             {/* Contact results */}
             {result.type === "contacts" && result.results.length === 0 && (
-              <p className="text-zinc-500 text-sm">No relevant contacts found.</p>
+              <p className="text-zinc-600 text-sm">No relevant contacts found.</p>
             )}
             {result.type === "contacts" && result.results.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs text-zinc-500 mb-3">{result.results.length} contacts</p>
+                <p className="text-xs text-zinc-600 mb-3">{result.results.length} contacts</p>
                 {result.results.map((c, i) => (
                   <div key={c.id || i} className={`border rounded-xl p-4 ${c.follow_up ? "border-amber-200 bg-amber-50/30" : "border-zinc-200"}`}>
                     <div className="flex items-start justify-between">
@@ -445,11 +445,11 @@ export default function Home() {
                             <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">follow up</span>
                           )}
                         </div>
-                        <p className="text-sm text-zinc-500">
+                        <p className="text-sm text-zinc-600">
                           {[c.role, c.company].filter(Boolean).join(" at ")}
                         </p>
                         {(c.city || c.country) && (
-                          <p className="text-xs text-zinc-500 mt-0.5">
+                          <p className="text-xs text-zinc-600 mt-0.5">
                             {[c.city, c.country].filter(Boolean).join(", ")}
                           </p>
                         )}
@@ -458,31 +458,31 @@ export default function Home() {
                         <span className={`text-xs px-2 py-0.5 rounded-full ${
                           c.relationship_strength === "strong" ? "bg-green-100 text-green-700"
                           : c.relationship_strength === "medium" ? "bg-yellow-100 text-yellow-700"
-                          : "bg-zinc-100 text-zinc-500"
+                          : "bg-zinc-100 text-zinc-600"
                         }`}>
                           {c.relationship_strength || "—"}
                         </span>
-                        <a href={`/contacts?edit=${c.id}`} className="text-xs text-zinc-500 hover:text-zinc-700 border border-zinc-200 hover:border-zinc-400 px-2 py-1 rounded-lg">Edit</a>
+                        <a href={`/contacts?edit=${c.id}`} className="text-xs text-zinc-600 hover:text-zinc-800 border border-zinc-200 hover:border-zinc-400 px-2 py-1 rounded-lg">Edit</a>
                       </div>
                     </div>
                     {c.follow_up_note && (
                       <p className="text-xs text-amber-700 mt-1.5 italic">↳ {c.follow_up_note}</p>
                     )}
                     {c.how_you_know_them && (
-                      <p className="text-sm text-zinc-500 mt-2">{c.how_you_know_them}</p>
+                      <p className="text-sm text-zinc-600 mt-2">{c.how_you_know_them}</p>
                     )}
                     {c.topics && c.topics.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2">
                         {c.topics.map((t) => (
-                          <span key={t} className="text-xs bg-zinc-100 text-zinc-500 px-2 py-0.5 rounded-full">{t}</span>
+                          <span key={t} className="text-xs bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{t}</span>
                         ))}
                       </div>
                     )}
                     {c.relevance && (
-                      <p className="text-sm text-zinc-700 mt-2 bg-zinc-50 px-3 py-2 rounded-lg">{c.relevance}</p>
+                      <p className="text-sm text-zinc-800 mt-2 bg-zinc-50 px-3 py-2 rounded-lg">{c.relevance}</p>
                     )}
                     {c.last_meaningful_contact && (
-                      <p className="text-xs text-zinc-500 mt-2">Last contact: {c.last_meaningful_contact}</p>
+                      <p className="text-xs text-zinc-600 mt-2">Last contact: {c.last_meaningful_contact}</p>
                     )}
                   </div>
                 ))}
@@ -491,31 +491,31 @@ export default function Home() {
 
             {/* Signal results */}
             {result.type === "signals" && result.results.length === 0 && (
-              <p className="text-zinc-500 text-sm">Nothing saved on that topic yet.</p>
+              <p className="text-zinc-600 text-sm">Nothing saved on that topic yet.</p>
             )}
             {result.type === "signals" && result.results.length > 0 && (
               <div className="space-y-2">
-                <p className="text-xs text-zinc-500 mb-3">{result.results.length} items from your brain</p>
+                <p className="text-xs text-zinc-600 mb-3">{result.results.length} items from your brain</p>
                 {result.results.map((s) => (
                   <div key={s.id} className="border border-zinc-200 rounded-xl p-4">
                     <p className="text-sm text-zinc-900 mb-2">{s.summary}</p>
                     {s.topics && s.topics.length > 0 && (
                       <div className="flex flex-wrap gap-1 mb-2">
                         {s.topics.map((t) => (
-                          <span key={t} className="text-xs bg-zinc-100 text-zinc-500 px-2 py-0.5 rounded-full">{t}</span>
+                          <span key={t} className="text-xs bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{t}</span>
                         ))}
                       </div>
                     )}
                     {s.relevance && (
-                      <p className="text-sm text-zinc-700 bg-zinc-50 px-3 py-2 rounded-lg mt-2">{s.relevance}</p>
+                      <p className="text-sm text-zinc-800 bg-zinc-50 px-3 py-2 rounded-lg mt-2">{s.relevance}</p>
                     )}
                     <div className="flex items-center justify-between mt-3">
-                      <p className="text-xs text-zinc-500">
+                      <p className="text-xs text-zinc-600">
                         {s.source_title && `${s.source_title} · `}
                         {new Date(s.captured_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                       </p>
                       {s.source_url && (
-                        <a href={s.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-zinc-500 hover:text-zinc-700 underline">Source ↗</a>
+                        <a href={s.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-zinc-600 hover:text-zinc-800 underline">Source ↗</a>
                       )}
                     </div>
                   </div>
@@ -526,7 +526,7 @@ export default function Home() {
             {/* Interaction history */}
             {interactions.length > 0 && (
               <details className="mt-4 group" open={result?.type === "logged"}>
-                <summary className="text-xs text-zinc-500 cursor-pointer hover:text-zinc-700 list-none flex items-center gap-1">
+                <summary className="text-xs text-zinc-600 cursor-pointer hover:text-zinc-800 list-none flex items-center gap-1">
                   <span className="group-open:hidden">▸</span>
                   <span className="hidden group-open:inline">▾</span>
                   {interactions.length} interaction{interactions.length > 1 ? "s" : ""} logged
@@ -535,13 +535,13 @@ export default function Home() {
                   {interactions.map((ix) => (
                     <div key={ix.id} className="text-sm">
                       <div className="flex items-baseline gap-2">
-                        <span className="text-xs text-zinc-500 flex-shrink-0">{ix.date}</span>
-                        <span className="text-zinc-700">{ix.summary ?? ix.raw_content}</span>
+                        <span className="text-xs text-zinc-600 flex-shrink-0">{ix.date}</span>
+                        <span className="text-zinc-800">{ix.summary ?? ix.raw_content}</span>
                       </div>
                       {ix.topics && ix.topics.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1 ml-16">
                           {ix.topics.map((t) => (
-                            <span key={t} className="text-xs bg-zinc-100 text-zinc-500 px-1.5 py-0.5 rounded-full">{t}</span>
+                            <span key={t} className="text-xs bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded-full">{t}</span>
                           ))}
                         </div>
                       )}
