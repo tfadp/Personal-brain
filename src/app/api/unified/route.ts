@@ -977,6 +977,63 @@ Return ONLY valid JSON:
   };
 }
 
+// ── Document handler (PDF, .txt, .md) ───────────────────────────────────────
+
+async function handle_document(file_data: string, file_type: string, file_name: string, context?: string) {
+  const extract_prompt = `Extract the core knowledge from this document and return ONLY valid JSON.
+${context ? `\nUser context: ${context}\n` : ""}
+Return:
+{
+  "summary": "2-3 sentences capturing the actual insight — what it says and why it matters",
+  "topics": ["3-6 specific topic tags"],
+  "source_title": "title if identifiable, else null",
+  "source_url": null
+}`;
+
+  let response;
+  let stored_raw: string;
+
+  if (file_type === "application/pdf") {
+    response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 512,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "document", source: { type: "base64", media_type: "application/pdf", data: file_data } } as ContentBlockParam,
+          { type: "text", text: extract_prompt },
+        ] as ContentBlockParam[],
+      }],
+    });
+    stored_raw = `[PDF] ${file_name}${context ? ` — ${context}` : ""}`;
+  } else {
+    const decoded = Buffer.from(file_data, "base64").toString("utf-8");
+    const truncated = decoded.slice(0, 8000);
+    response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 512,
+      messages: [{ role: "user", content: `${extract_prompt}\n\nInput:\n${truncated}` }],
+    });
+    stored_raw = `[${file_name}] ${truncated.slice(0, 500)}`;
+  }
+
+  const raw = response.content[0].type === "text" ? response.content[0].text : "{}";
+  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+  let parsed: { summary: string; topics: string[]; source_title: string | null; source_url: string | null };
+  try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not process that document." }; }
+
+  const { data, error } = await getSupabase().from("signals").insert({
+    summary: parsed.summary,
+    topics: parsed.topics,
+    source_title: parsed.source_title ?? file_name,
+    source_url: parsed.source_url,
+    raw_input: stored_raw,
+  }).select().single();
+
+  if (error) return { type: "error", message: error.message };
+  return { type: "ingested", signal: data };
+}
+
 // ── Screenshot handler ───────────────────────────────────────────────────────
 
 function normalize_image_type(file_type: string): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
@@ -1124,9 +1181,10 @@ export async function POST(request: NextRequest) {
       { headers: { "Content-Type": "text/event-stream" } }
     );
   }
-  if (file_data && !file_type?.startsWith("image/")) {
+  const SUPPORTED_FILE_TYPES = ["image/", "application/pdf", "text/plain", "text/markdown"];
+  if (file_data && !SUPPORTED_FILE_TYPES.some((t) => file_type?.startsWith(t))) {
     return new Response(
-      `data: ${JSON.stringify({ type: "error", message: "Unsupported file type" })}\n\n`,
+      `data: ${JSON.stringify({ type: "error", message: "Unsupported file type. Supports images, PDF, .txt, .md" })}\n\n`,
       { headers: { "Content-Type": "text/event-stream" } }
     );
   }
@@ -1140,6 +1198,12 @@ export async function POST(request: NextRequest) {
         if (file_data && file_type?.startsWith("image/")) {
           send({ type: "status", message: "Reading screenshot..." });
           send(await handle_screenshot(file_data, file_type, input?.trim()));
+          return;
+        }
+
+        if (file_data && (file_type === "application/pdf" || file_type?.startsWith("text/"))) {
+          send({ type: "status", message: "Reading document..." });
+          send(await handle_document(file_data, file_type, body.file_name ?? "document", input?.trim()));
           return;
         }
 

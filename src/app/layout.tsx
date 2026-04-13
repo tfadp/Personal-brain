@@ -22,7 +22,6 @@ export default function RootLayout({
             </Link>
             <div className="flex gap-5 text-xs text-zinc-500">
               <Link href="/contacts" className="hover:text-zinc-700">Contacts</Link>
-              <Link href="/signal" className="hover:text-zinc-700">Signal</Link>
               <Link href="/rank" className="hover:text-zinc-700">Rank</Link>
               <Link href="/import" className="hover:text-zinc-700">Import</Link>
             </div>
