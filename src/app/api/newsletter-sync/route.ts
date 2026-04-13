@@ -215,7 +215,7 @@ export async function GET() {
 
   // Look back 48 hours — daily cron with overlap so nothing is missed
   const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
-  const after_epoch = Math.floor(since.getTime() / 1000);
+  const after_date = `${since.getFullYear()}/${String(since.getMonth() + 1).padStart(2, "0")}/${String(since.getDate()).padStart(2, "0")}`;
 
   const results: Record<string, { processed: number; skipped: number; signals_saved: number }> = {};
   let total_signals = 0;
@@ -226,7 +226,7 @@ export async function GET() {
     // Search for emails from this sender in the window
     const search = await gmail.users.messages.list({
       userId: "me",
-      q: `from:${sender.email} after:${after_epoch}`,
+      q: `from:${sender.email} after:${after_date}`,
       maxResults: 20,
     });
 
