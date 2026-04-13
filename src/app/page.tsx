@@ -16,6 +16,27 @@ type ResultType =
   | { type: "clarify"; message: string; candidates: Pick<Contact, "id" | "name" | "company" | "city">[] }
   | { type: "error"; message: string };
 
+const RAMBLE_LINES = [
+  "Leaves are fallin' all around",
+  "It's time I was on my way",
+  "Thanks to you, I'm much obliged",
+  "For such a pleasant stay",
+  "But now it's time for me to go",
+  "The autumn moon lights my way",
+  "For now, I smell the rain, and with it, pain",
+  "And it's headed my way",
+  "Ah, sometimes I grow so tired",
+  "But I know I've got one thing I've got to do",
+  "Ramble on",
+  "And now's the time, the time is now",
+  "Sing my song",
+  "I'm goin' 'round the world, I gotta find my girl",
+  "On my way",
+  "I've been this way ten years to the day",
+  "I'm gonna ramble on",
+  "Gotta find the queen of all my dreams",
+];
+
 const EXAMPLES = [
   "Who do I know in sports media?",
   "Had coffee with Anamitra — talked about AI media",
@@ -31,7 +52,17 @@ export default function Home() {
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [pending_input, setPendingInput] = useState<string>("");
   const [interactions, setInteractions] = useState<Interaction[]>([]);
+  const [ramble_index, setRambleIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Cycle through lyrics while loading
+  useEffect(() => {
+    if (!loading) { setRambleIndex(0); return; }
+    const interval = setInterval(() => {
+      setRambleIndex((i) => (i + 1) % RAMBLE_LINES.length);
+    }, 3500);
+    return () => clearInterval(interval);
+  }, [loading]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize textarea
@@ -211,7 +242,14 @@ export default function Home() {
 
         {/* ── Status ─────────────────────────────────────────────── */}
         {status && (
-          <p className="text-sm text-zinc-600 text-center py-6 animate-pulse">{status}</p>
+          <div className="text-center py-6 space-y-2">
+            <p className="text-sm text-zinc-600 animate-pulse">{status}</p>
+            {loading && (
+              <p className="text-xs text-zinc-400 italic transition-opacity duration-500">
+                {RAMBLE_LINES[ramble_index]}
+              </p>
+            )}
+          </div>
         )}
 
         {/* ── Results ────────────────────────────────────────────── */}
