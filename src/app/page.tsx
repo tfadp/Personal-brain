@@ -55,12 +55,13 @@ export default function Home() {
   const [ramble_index, setRambleIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Cycle through lyrics while loading
+  // Cycle through lyrics while loading — start from a random line immediately
   useEffect(() => {
-    if (!loading) { setRambleIndex(0); return; }
+    if (!loading) return;
+    setRambleIndex(Math.floor(Math.random() * RAMBLE_LINES.length));
     const interval = setInterval(() => {
       setRambleIndex((i) => (i + 1) % RAMBLE_LINES.length);
-    }, 3500);
+    }, 3000);
     return () => clearInterval(interval);
   }, [loading]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
