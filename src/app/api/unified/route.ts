@@ -390,22 +390,16 @@ async function handle_query_contacts(input: string) {
     return { type: "contacts", results };
   }
 
-  // Fast path: local query expansion + DB retrieval, no Claude for straightforward queries.
+  // DB fetch for candidates, then Claude ranks them.
+  // The DB-direct path was removed because it returns wrong results —
+  // keyword matching can't distinguish "in London" (city) from "in HR" (role)
+  // or filter out false positives like "human" matching "Human Rights Watch."
   const expanded = locally_expand_query(input);
   const supabase_candidates = await get_candidates(expanded);
 
   if (supabase_candidates.length === 0) return { type: "contacts", results: [] };
 
-  if (should_use_direct_contact_search(input)) {
-    const ranked = rank_direct_contacts(supabase_candidates, [
-      ...expanded.search_terms,
-      ...expanded.location_terms,
-    ]);
-    // Cap direct results — top matches by quality + relevance score
-    return { type: "contacts", results: ranked.slice(0, 30) };
-  }
-
-  // Semantic path: smaller, rarer Claude rerank over bounded DB candidates.
+  // Claude ranks all candidates — accepts ~10-15s for correct results.
   const res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2048,
