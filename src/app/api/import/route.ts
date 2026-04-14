@@ -19,7 +19,97 @@ function is_linkedin_export(headers: string[]): boolean {
   return LINKEDIN_SIGNATURE_HEADERS.every((h) => headers.includes(h));
 }
 
+// Deterministic header → schema_field lookup. Covers the 20 or so column
+// names used by LinkedIn, Google Contacts, Notion, HubSpot, Salesforce, and
+// Airtable exports. If every header in a CSV matches this table, we skip
+// the Claude call entirely.
+const KNOWN_HEADERS: Record<string, string> = {
+  // Name variants
+  name: "name",
+  full_name: "name",
+  fullname: "name",
+  first_name: "name",
+  firstname: "name",
+  last_name: "name",
+  lastname: "name",
+  display_name: "name",
+
+  // Email variants
+  email: "email",
+  email_address: "email",
+  emailaddress: "email",
+  primary_email: "email",
+  e_mail: "email",
+
+  // Company variants
+  company: "company",
+  company_name: "company",
+  organization: "company",
+  employer: "company",
+  current_company: "company",
+
+  // Role / title variants
+  role: "role",
+  title: "role",
+  job_title: "role",
+  position: "role",
+  current_position: "role",
+  headline: "role",
+
+  // Location variants
+  city: "city",
+  location: "city",
+  country: "country",
+
+  // LinkedIn URL variants
+  linkedin_url: "linkedin_url",
+  linkedin: "linkedin_url",
+  profile_url: "linkedin_url",
+  url: "linkedin_url",
+
+  // Date variants
+  connected_on: "last_meaningful_contact",
+  last_contact: "last_meaningful_contact",
+  last_meaningful_contact: "last_meaningful_contact",
+
+  // Notes variants
+  notes: "notes",
+  note: "notes",
+  comments: "notes",
+  description: "notes",
+
+  // Topics
+  topics: "topics",
+  tags: "topics",
+};
+
+function try_deterministic_map(csv_headers: string[]): Record<string, string> | null {
+  const mapped: Record<string, string> = {};
+  let recognised = 0;
+  for (const h of csv_headers) {
+    const field = KNOWN_HEADERS[h];
+    if (field) {
+      mapped[h] = field;
+      recognised++;
+    } else {
+      mapped[h] = "";
+    }
+  }
+  // Need at least a name or email to be a usable mapping AND we should recognise
+  // most headers — if fewer than 60% match, fall back to Claude for safety.
+  const has_name = Object.values(mapped).includes("name");
+  const has_email = Object.values(mapped).includes("email");
+  if (!has_name && !has_email) return null;
+  if (recognised / csv_headers.length < 0.6) return null;
+  return mapped;
+}
+
 async function map_headers(csv_headers: string[]): Promise<Record<string, string>> {
+  // Deterministic fast path — covers LinkedIn, Google Contacts, Notion, etc.
+  const deterministic = try_deterministic_map(csv_headers);
+  if (deterministic) return deterministic;
+
+  // Fallback to Claude for unusual CSV formats
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 512,

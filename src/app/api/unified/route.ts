@@ -4,6 +4,7 @@ import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { getSupabase } from "@/lib/supabase";
 import { Contact, Signal } from "@/lib/types";
 import { enrich_input } from "@/lib/enrich";
+import { topics_from_url } from "@/lib/domain_topics";
 import { apply_contact_update, apply_contact_update_by_id, UpdatePayload } from "@/lib/contact_update";
 
 const anthropic = new Anthropic();
@@ -55,6 +56,12 @@ function fast_intent(input: string): Intent | null {
   if (/\b(set|add|clear|remove|done with) follow.?up\b/.test(t)) return "update_contact";
   if (/\b(add|new) contact\b/.test(t)) return "add_contact";
   if (/\badd (them|these|all|contacts?)\b/.test(t)) return "add_contact";
+  // Additional follow-up phrasings that fall through to Claude classifier otherwise
+  if (/\b(remember to|need to|gotta) (ping|call|email|text|reach out to|follow up with)\b/.test(t)) return "update_contact";
+  if (/\bowe [a-z]+ (a |an )?(reply|response|call|email|text|follow.?up)\b/.test(t)) return "update_contact";
+  if (/\b([a-z]+('s|)? )?(number|email|contact info) is\b/.test(t)) return "update_contact";
+  // Single-line "follow up <name>" without "with"
+  if (/^follow.?up [a-z]/i.test(t)) return "update_contact";
   // Pasted list: 2+ lines each containing an email address (and no update directive above)
   if ((input.match(/\n/g) ?? []).length >= 1 && (input.match(/@\w+\.\w+/g) ?? []).length >= 2) return "add_contact";
   return null;
@@ -771,11 +778,16 @@ Return:
   let parsed: { summary: string; topics: string[]; source_title: string | null; source_url: string | null };
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not process that input." }; }
 
+  // Seed topics from the domain if we recognize it — no extra LLM cost
+  const final_url = parsed.source_url ?? source_url;
+  const domain_topics = topics_from_url(final_url);
+  const merged_topics = [...new Set([...(parsed.topics ?? []), ...domain_topics])];
+
   const { data, error } = await getSupabase().from("signals").insert({
     summary: parsed.summary,
-    topics: parsed.topics,
+    topics: merged_topics,
     source_title: detected_title ?? parsed.source_title,
-    source_url: parsed.source_url ?? source_url,
+    source_url: final_url,
     raw_input: input.trim(),
   }).select().single();
 
