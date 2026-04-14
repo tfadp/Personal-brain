@@ -106,7 +106,9 @@ export async function apply_contact_update(
       const same_first = name_a[0] === name_b[0];
       const company_a = (first.company ?? "").toLowerCase();
       const company_b = (m.company ?? "").toLowerCase();
-      const same_company = !company_a || !company_b || company_a.includes(company_b) || company_b.includes(company_a);
+      // Only auto-merge when BOTH have a company and they overlap — if either is blank,
+      // fall through to clarify (two "Sarah"s with no company could be different people)
+      const same_company = !!company_a && !!company_b && (company_a.includes(company_b) || company_b.includes(company_a));
       return same_first && same_company;
     });
 

@@ -202,8 +202,13 @@ export async function GET(request: Request) {
   // Vercel cron sends a GET with a secret header — verify it
   // (Vercel automatically adds CRON_SECRET to cron requests)
   // We skip verification in dev but enforce in production via env
-  if (process.env.NODE_ENV === "production" && !process.env.CRON_SECRET) {
-    console.warn("CRON_SECRET not set — newsletter-sync is open. Set it in Vercel env vars.");
+  // Verify Vercel cron secret if configured
+  const cron_secret = process.env.CRON_SECRET;
+  if (cron_secret) {
+    const auth_header = request.headers.get("authorization") ?? "";
+    if (auth_header !== `Bearer ${cron_secret}`) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
   }
 
   let gmail;

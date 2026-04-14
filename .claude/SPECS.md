@@ -1,8 +1,8 @@
 # SPECS.md — Source of Truth (Contracts + Decisions)
 
 ## A) Naming Conventions (LOCKED)
-- Variables: camelCase (TypeScript convention)
-- Functions: camelCase
+- Variables: snake_case (project convention — matches global CLAUDE.md)
+- Functions: snake_case
 - Classes / Interfaces: PascalCase
 - Files: lowercase-with-dashes (e.g. `route.ts`, `supabase.ts`)
 - Folders: lowercase

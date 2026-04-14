@@ -35,8 +35,9 @@ export async function POST(request: NextRequest) {
   if (!raw_content?.trim()) {
     return Response.json({ error: "raw_content required" }, { status: 400 });
   }
-  if (!contact_id) {
-    return Response.json({ error: "contact_id required" }, { status: 400 });
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!contact_id || !UUID_RE.test(contact_id)) {
+    return Response.json({ error: "Valid contact_id required" }, { status: 400 });
   }
 
   const today = new Date().toISOString().split("T")[0];
@@ -72,7 +73,8 @@ Return ONLY valid JSON:
     parsed = { summary: raw_content.slice(0, 200), topics: [], date: today };
   }
 
-  const interaction_date = parsed.date ?? today;
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const interaction_date = (parsed.date && DATE_RE.test(parsed.date)) ? parsed.date : today;
   const supabase = getSupabase();
 
   const { data, error } = await supabase

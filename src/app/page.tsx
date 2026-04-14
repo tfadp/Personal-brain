@@ -5,7 +5,6 @@ import { Contact, Signal, Interaction } from "@/lib/types";
 
 type ResultType =
   | { type: "contacts"; results: (Contact & { relevance?: string })[] }
-  | { type: "signals"; results: (Signal & { relevance?: string })[] }
   | { type: "ingested"; signal: Signal }
   | { type: "updated"; action: string; contact: Contact }
   | { type: "updated_bulk"; updated: string[]; not_found: string[]; action: string }
@@ -523,40 +522,6 @@ export default function Home() {
                     {c.last_meaningful_contact && (
                       <p className="text-xs text-zinc-600 mt-2">Last contact: {c.last_meaningful_contact}</p>
                     )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Signal results */}
-            {result.type === "signals" && result.results.length === 0 && (
-              <p className="text-zinc-600 text-sm">Nothing saved on that topic yet.</p>
-            )}
-            {result.type === "signals" && result.results.length > 0 && (
-              <div className="space-y-2">
-                <p className="text-xs text-zinc-600 mb-3">{result.results.length} items from your brain</p>
-                {result.results.map((s) => (
-                  <div key={s.id} className="border border-zinc-200 rounded-xl p-4">
-                    <p className="text-sm text-zinc-900 mb-2">{s.summary}</p>
-                    {s.topics && s.topics.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mb-2">
-                        {s.topics.map((t) => (
-                          <span key={t} className="text-xs bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                    {s.relevance && (
-                      <p className="text-sm text-zinc-800 bg-zinc-50 px-3 py-2 rounded-lg mt-2">{s.relevance}</p>
-                    )}
-                    <div className="flex items-center justify-between mt-3">
-                      <p className="text-xs text-zinc-600">
-                        {s.source_title && `${s.source_title} · `}
-                        {new Date(s.captured_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                      </p>
-                      {s.source_url && (
-                        <a href={s.source_url} target="_blank" rel="noopener noreferrer" className="text-xs text-zinc-600 hover:text-zinc-800 underline">Source ↗</a>
-                      )}
-                    </div>
                   </div>
                 ))}
               </div>

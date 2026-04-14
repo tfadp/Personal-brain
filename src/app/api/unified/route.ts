@@ -70,8 +70,9 @@ async function classify_intent(input: string): Promise<Intent> {
     messages: [{
       role: "user",
       content: `Classify this input for a personal contacts + knowledge app. Return ONLY one of these exact strings:
-query_contacts | query_signals | ingest_signal | update_contact | add_contact | log_interaction
+query_contacts | query_signals | query_combined | ingest_signal | update_contact | add_contact | log_interaction
 
+query_combined = user asking about both their saved research AND relevant people in one question (e.g. "what does my research say about X and who should I talk to")
 log_interaction = user describing a meeting, call, or conversation with a specific person that should be logged to their history (e.g. "talked to X about Y", "had coffee with X", "met X at Z")
 update_contact = changing a contact field or marking follow-up (e.g. "mark X for follow-up", "X moved to Goldman")
 
@@ -210,15 +211,24 @@ function locally_expand_query(input: string): ExpandedQuery {
 
 function should_use_direct_contact_search(input: string): boolean {
   const lower = input.toLowerCase().trim();
-  return (
+  // Only bypass Claude for queries that are unambiguously structural.
+  // Role/industry queries ("in AI", "in media", "works in finance") need Claude
+  // for semantic understanding. Location + company lookups are safe for DB-direct.
+  const is_structural =
     /^who do i know\b/.test(lower) ||
     /^find\b/.test(lower) ||
     /^show me\b/.test(lower) ||
     /^list\b/.test(lower) ||
-    /\bworks? in\b/.test(lower) ||
-    /\bworks? at\b/.test(lower) ||
-    /\bin [a-z]/.test(lower)
-  );
+    /\bworks? at\b/.test(lower);
+
+  if (!is_structural) return false;
+
+  // Even for structural queries, if the query contains words that suggest
+  // semantic ambiguity (should, could, might, about, help, recommend),
+  // route to Claude instead.
+  if (/\b(should|could|might|about|help|recommend|best|who also|that also)\b/.test(lower)) return false;
+
+  return true;
 }
 
 function contact_field_text(contact: Contact, field: (typeof SEARCH_FIELDS)[number]): string {
@@ -465,8 +475,9 @@ async function handle_query_signals(input: string) {
     const { data: topic_candidates } = await supabase
       .from("signals")
       .select("id,summary,topics,source_title,captured_at")
+      .not("topics", "is", null)
       .order("captured_at", { ascending: false })
-      .limit(1000);
+      .limit(200);
     const case_insensitive_topics = as_signals(topic_candidates).filter((signal) =>
       signal.topics?.some((topic) => {
         const normalized = topic.toLowerCase();
@@ -482,16 +493,20 @@ async function handle_query_signals(input: string) {
   }
 
   if (all.length === 0) {
-    // Fallback: recent 200 signals — Claude ranks from this candidate set.
-    const { data: recent } = await supabase
-      .from("signals")
-      .select("id,summary,topics,source_title,captured_at")
-      .order("captured_at", { ascending: false })
-      .limit(200);
-    all = as_signals(recent);
+    return {
+      type: "combined",
+      core_thesis: "You don't have any saved material on this topic yet.",
+      point_of_view: [],
+      implications: [],
+      tensions: [],
+      missing_information: ["Save some articles, notes, or links on this topic and ask again."],
+      takeaway: "Nothing saved on this topic yet.",
+      hot_take: "",
+      next_move: "Paste a URL or article about this topic into Cortex to start building your knowledge base.",
+      signals: [],
+      contacts: [],
+    };
   }
-
-  if (all.length === 0) return { type: "signals", results: [] };
 
   // Synthesize — form a point of view, don't just list articles
   const synthesis_res = await anthropic.messages.create({
