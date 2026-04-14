@@ -37,6 +37,7 @@ export interface Contact {
   contact_quality: number | null;   // 1=noise, 2=weak tie, 3=real relationship
   follow_up: boolean | null;        // true = waiting to hear from you
   follow_up_note: string | null;    // context e.g. "said let's catch up at Summit"
+  contact_embedding?: number[] | null; // pgvector — populated by embed-contacts script
   created_at: string;
   updated_at: string;
 }

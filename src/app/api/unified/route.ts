@@ -5,6 +5,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Contact, Signal } from "@/lib/types";
 import { enrich_input } from "@/lib/enrich";
 import { topics_from_url } from "@/lib/domain_topics";
+import { embed_text } from "@/lib/embeddings";
 import { apply_contact_update, apply_contact_update_by_id, UpdatePayload } from "@/lib/contact_update";
 
 const anthropic = new Anthropic();
@@ -443,57 +444,76 @@ function rank_direct_contacts(contacts: Contact[], terms: string[]): Contact[] {
  * expand_query thinks like a human — "recruiting" → HR, talent, staffing.
  * "Brooklyn" → NYC, New York. We search with ALL the expanded terms.
  */
-async function get_candidates(expanded: ExpandedQuery): Promise<Contact[]> {
+async function get_candidates(expanded: ExpandedQuery, raw_input?: string): Promise<Contact[]> {
   const supabase = getSupabase();
 
   const all_terms = [...new Set([...expanded.search_terms, ...expanded.location_terms])].filter(Boolean);
-  if (all_terms.length === 0) return [];
 
-  // Text field search (ilike across all searchable columns)
-  const text_filters = all_terms.flatMap((k) => [
-    `name.ilike.%${k}%`,
-    ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${k}%`),
-  ]);
-  const { data: text_hits } = await supabase
-    .from("contacts")
-    .select(SLIM_FIELDS)
-    .or(text_filters.join(","))
-    .order("contact_quality", { ascending: false, nullsFirst: false })
-    .limit(300);
+  // ── Vector search path ──
+  // Embed the raw query and pull the 80 nearest contacts by cosine similarity.
+  // Runs in parallel with keyword search below; either path can populate candidates.
+  let vector_hits: Contact[] = [];
+  if (raw_input && raw_input.trim().length > 3) {
+    try {
+      const vec = await embed_text(raw_input);
+      const { data: matches } = await supabase.rpc("match_contacts", {
+        query_embedding: vec,
+        match_count: 80,
+      });
+      if (matches && matches.length > 0) {
+        const ids = matches.map((m: { id: string }) => m.id);
+        const { data: full } = await supabase
+          .from("contacts")
+          .select(SLIM_FIELDS)
+          .in("id", ids);
+        // Preserve similarity order from the RPC result
+        const full_contacts = as_contacts(full);
+        const by_id = Object.fromEntries(full_contacts.map((c) => [c.id, c]));
+        vector_hits = ids.map((id: string) => by_id[id]).filter(Boolean);
+      }
+    } catch (err) {
+      // Non-fatal — fall back to keyword search alone if embedding fails
+      console.warn("Vector search failed, falling back to keyword:", err);
+    }
+  }
 
-  // Topics array search (Postgres overlaps + case-insensitive in-app filter)
-  const { data: topic_exact } = await supabase
-    .from("contacts")
-    .select(SLIM_FIELDS)
-    .overlaps("topics", all_terms)
-    .limit(200);
+  // ── Keyword search path ──
+  // Keep the old keyword path so names, companies, and cities still match
+  // even when the embedding misses them (short queries, proper nouns, etc.)
+  let keyword_hits: Contact[] = [];
+  if (all_terms.length > 0) {
+    const text_filters = all_terms.flatMap((k) => [
+      `name.ilike.%${k}%`,
+      ...SEARCH_FIELDS.map((field) => `${field}.ilike.%${k}%`),
+    ]);
+    const { data: text_hits } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .or(text_filters.join(","))
+      .order("contact_quality", { ascending: false, nullsFirst: false })
+      .limit(200);
 
-  const { data: all_with_topics } = await supabase
-    .from("contacts")
-    .select(SLIM_FIELDS)
-    .not("topics", "is", null)
-    .limit(2000);
-  const topic_fuzzy = as_contacts(all_with_topics).filter((c) =>
-    c.topics?.some((t) => {
-      const tl = t.toLowerCase();
-      return all_terms.some((term) => tl.includes(term));
-    })
-  );
+    const { data: topic_exact } = await supabase
+      .from("contacts")
+      .select(SLIM_FIELDS)
+      .overlaps("topics", all_terms)
+      .limit(100);
 
-  let candidates = unique_by_id([
-    ...as_contacts(text_hits),
-    ...as_contacts(topic_exact),
-    ...topic_fuzzy,
-  ]);
+    keyword_hits = unique_by_id([...as_contacts(text_hits), ...as_contacts(topic_exact)]);
+  }
 
-  // For role queries with few keyword hits, supplement with top-quality contacts
-  if (expanded.is_role_query && candidates.length < 50) {
+  // Combine: vector hits first (preserving similarity order), then any keyword
+  // hits the vector search missed. Cap at 250 so Claude ranking stays fast.
+  let candidates = unique_by_id([...vector_hits, ...keyword_hits]);
+
+  // Fallback: if both paths came up empty, supplement with top-quality contacts
+  if (candidates.length === 0 && expanded.is_role_query) {
     const { data: quality_contacts } = await supabase
       .from("contacts")
       .select(SLIM_FIELDS)
       .order("contact_quality", { ascending: false, nullsFirst: false })
       .limit(100);
-    candidates = unique_by_id([...candidates, ...as_contacts(quality_contacts)]);
+    candidates = as_contacts(quality_contacts);
   }
 
   return candidates.slice(0, 250);
@@ -543,7 +563,7 @@ async function handle_query_contacts(input: string) {
   // keyword matching can't distinguish "in London" (city) from "in HR" (role)
   // or filter out false positives like "human" matching "Human Rights Watch."
   const expanded = locally_expand_query(input);
-  const supabase_candidates = await get_candidates(expanded);
+  const supabase_candidates = await get_candidates(expanded, input);
 
   if (supabase_candidates.length === 0) return { type: "contacts", results: [] };
 

@@ -1,6 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { Contact } from "@/lib/types";
+import { contact_embedding_text, embed_text } from "@/lib/embeddings";
+
+// Fields that affect the embedding text. If any of these change on PUT,
+// we re-embed. If none of these change (e.g. just flipping follow_up),
+// we skip the embed call to save tokens.
+const EMBEDDING_FIELDS = [
+  "name", "company", "role", "city", "country",
+  "how_you_know_them", "topics", "notes",
+] as const;
+
+// Best-effort embed — logs failures but never blocks the write.
+async function embed_contact_safe(contact: Partial<Contact>): Promise<number[] | null> {
+  try {
+    const text = contact_embedding_text(contact);
+    if (!text.trim()) return null;
+    return await embed_text(text);
+  } catch (err) {
+    console.warn("Contact embedding failed (non-fatal):", err);
+    return null;
+  }
+}
 
 const VALID_STRENGTHS = ["strong", "medium", "light"];
 const VALID_QUALITIES = [1, 2, 3];
@@ -59,6 +80,16 @@ export async function POST(request: NextRequest) {
   const supabase = getSupabase();
   const { data, error } = await supabase.from("contacts").insert(body).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // Embed in the background — don't block the response on it.
+  // If the embed succeeds, patch the row with the vector.
+  embed_contact_safe(data as Contact).then((vec) => {
+    if (vec) {
+      supabase.from("contacts").update({ contact_embedding: vec }).eq("id", data.id)
+        .then(({ error: e }) => { if (e) console.warn("Embed write failed:", e); });
+    }
+  });
+
   return NextResponse.json(data);
 }
 
@@ -81,6 +112,18 @@ export async function PUT(request: NextRequest) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // Re-embed only if a field that affects the embedding text changed
+  const embedding_affected = EMBEDDING_FIELDS.some((f) => f in updates);
+  if (embedding_affected) {
+    embed_contact_safe(data as Contact).then((vec) => {
+      if (vec) {
+        supabase.from("contacts").update({ contact_embedding: vec }).eq("id", id)
+          .then(({ error: e }) => { if (e) console.warn("Embed write failed:", e); });
+      }
+    });
+  }
+
   return NextResponse.json(data);
 }
 
