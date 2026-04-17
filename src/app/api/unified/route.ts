@@ -221,9 +221,11 @@ async function classify_intent(input: string): Promise<Intent> {
       content: `Classify this input for a personal contacts + knowledge app. Return ONLY one of these exact strings:
 query_contacts | query_signals | query_combined | ingest_signal | update_contact | add_contact | log_interaction
 
-query_combined = user asking about both their saved research AND relevant people in one question (e.g. "what does my research say about X and who should I talk to")
-log_interaction = user describing a meeting, call, or conversation with a specific person that should be logged to their history (e.g. "talked to X about Y", "had coffee with X", "met X at Z")
+ingest_signal = saving knowledge to the brain: pasted text, tweets, articles, ideas, links, quotes, anything the user wants to remember. This is the DEFAULT — if it doesn't clearly fit another category, it's ingest_signal.
+query_combined = user asking about both their saved research AND relevant people in one question
+log_interaction = user describing a meeting, call, or conversation with a specific person (e.g. "talked to X about Y", "had coffee with X")
 update_contact = changing a contact field or marking follow-up (e.g. "mark X for follow-up", "X moved to Goldman")
+add_contact = user explicitly asking to ADD a new person to their contacts (e.g. "add contact John Smith", "new contact Sarah at Google"). Must have clear "add" or "new contact" language — do NOT classify pasted text about a person as add_contact.
 
 Input: "${input}"`,
     }],
@@ -1014,10 +1016,10 @@ Omit fields that are null — only include fields with actual values:
     const objects = [...clean.matchAll(/\{[^{}]+\}/g)].flatMap((m) => {
       try { return [JSON.parse(m[0])]; } catch { return []; }
     });
-    if (objects.length === 0) return { type: "error", message: "Could not parse contact details." };
+    if (objects.length === 0) return handle_ingest_signal(input);
     parsed = objects;
   }
-  if (!Array.isArray(parsed) || parsed.length === 0) return { type: "error", message: "Could not identify any contacts." };
+  if (!Array.isArray(parsed) || parsed.length === 0) return handle_ingest_signal(input);
 
   const wants_follow_up = /\bfollow.?up\b|\breach out\b|\bping\b/i.test(input);
 
@@ -1045,7 +1047,7 @@ Omit fields that are null — only include fields with actual values:
       };
     });
 
-  if (rows.length === 0) return { type: "error", message: "Could not identify any names." };
+  if (rows.length === 0) return handle_ingest_signal(input);
 
   // Skip rows whose email already exists in the DB to avoid unique constraint errors
   const emails_to_check = rows.map((r) => r.email).filter(Boolean) as string[];
