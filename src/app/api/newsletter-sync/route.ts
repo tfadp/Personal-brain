@@ -10,6 +10,8 @@ const anthropic = new Anthropic();
 interface NewsletterSender {
   email: string;
   label: string;
+  // Which Gmail account receives this newsletter: "gmail" or "dan"
+  account: "gmail" | "dan";
   // Custom extraction instructions for this sender (null = standard)
   instructions: string | null;
   // If true, one email may yield multiple signals (one per item)
@@ -17,80 +19,98 @@ interface NewsletterSender {
 }
 
 const SENDERS: NewsletterSender[] = [
+  // ── dan@juddporter.com account ──
   {
     email: "afterschool@substack.com",
     label: "After School (Substack)",
+    account: "dan",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "list@ben-evans.com",
     label: "Ben Evans",
+    account: "dan",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "hi@www.garbageday.email",
     label: "Garbage Day",
+    account: "dan",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "portfolio@juddporter.com",
     label: "Judd Porter Portfolio",
+    account: "dan",
     instructions: `This email contains multiple podcast summaries plus unrelated content (Eagles news, stock prices).
 IGNORE all sports scores, stock prices, Eagles football news, and financial market data.
 EXTRACT ONLY the podcast summaries. Each podcast summary is a separate insight.
 For each podcast: capture the core argument or idea discussed, not just the title.`,
-    multi_signal: true, // one email → multiple signals
+    multi_signal: true,
   },
+  // ── juddporter@gmail.com account ──
   {
     email: "dan@tldrnewsletter.com",
     label: "TLDR",
+    account: "gmail",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "superhuman@mail.joinsuperhuman.ai",
     label: "Superhuman AI",
+    account: "gmail",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "news@daily.therundown.ai",
     label: "The Rundown AI",
+    account: "gmail",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "aiadopters@substack.com",
     label: "AI Adopters (Substack)",
+    account: "gmail",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "buildtolaunch@substack.com",
     label: "Build to Launch (Substack)",
+    account: "gmail",
     instructions: null,
     multi_signal: false,
   },
   {
     email: "hi@simple.ai",
     label: "Simple AI",
+    account: "gmail",
     instructions: null,
     multi_signal: false,
   },
 ];
 
-// ── Gmail auth ────────────────────────────────────────────────────────────────
+// ── Gmail auth — supports two accounts ───────────────────────────────────────
 
-function get_gmail_client() {
+function get_gmail_client(account: "gmail" | "dan") {
   const client_id     = process.env.GMAIL_CLIENT_ID;
   const client_secret = process.env.GMAIL_CLIENT_SECRET;
-  const refresh_token = process.env.GMAIL_REFRESH_TOKEN;
+  const refresh_token = account === "dan"
+    ? process.env.GMAIL_REFRESH_TOKEN_DAN
+    : process.env.GMAIL_REFRESH_TOKEN;
 
-  if (!client_id || !client_secret || !refresh_token) {
-    throw new Error("Missing Gmail credentials. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN.");
+  if (!client_id || !client_secret) {
+    throw new Error("Missing GMAIL_CLIENT_ID or GMAIL_CLIENT_SECRET.");
+  }
+  if (!refresh_token) {
+    // Non-fatal — skip this account's senders, don't crash the whole sync
+    return null;
   }
 
   const auth = new google.auth.OAuth2(client_id, client_secret);
@@ -247,11 +267,14 @@ export async function GET(request: Request) {
     }
   }
 
-  let gmail;
-  try {
-    gmail = get_gmail_client();
-  } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+  // Build Gmail clients for each account — null if the token isn't configured
+  const gmail_clients = {
+    gmail: get_gmail_client("gmail"),
+    dan: get_gmail_client("dan"),
+  };
+
+  if (!gmail_clients.gmail && !gmail_clients.dan) {
+    return NextResponse.json({ error: "No Gmail tokens configured. Set GMAIL_REFRESH_TOKEN and/or GMAIL_REFRESH_TOKEN_DAN." }, { status: 500 });
   }
 
   // Look back window — daily cron uses 48h, manual hit with ?days=N overrides
@@ -265,6 +288,12 @@ export async function GET(request: Request) {
 
   for (const sender of SENDERS) {
     results[sender.email] = { processed: 0, skipped: 0, signals_saved: 0 };
+
+    const gmail = gmail_clients[sender.account];
+    if (!gmail) {
+      // Token for this account not configured yet — skip silently
+      continue;
+    }
 
     // Search for emails from this sender in the window
     const search = await gmail.users.messages.list({
