@@ -44,6 +44,42 @@ EXTRACT ONLY the podcast summaries. Each podcast summary is a separate insight.
 For each podcast: capture the core argument or idea discussed, not just the title.`,
     multi_signal: true, // one email → multiple signals
   },
+  {
+    email: "dan@tldrnewsletter.com",
+    label: "TLDR",
+    instructions: null,
+    multi_signal: false,
+  },
+  {
+    email: "superhuman@mail.joinsuperhuman.ai",
+    label: "Superhuman AI",
+    instructions: null,
+    multi_signal: false,
+  },
+  {
+    email: "news@daily.therundown.ai",
+    label: "The Rundown AI",
+    instructions: null,
+    multi_signal: false,
+  },
+  {
+    email: "aiadopters@substack.com",
+    label: "AI Adopters (Substack)",
+    instructions: null,
+    multi_signal: false,
+  },
+  {
+    email: "buildtolaunch@substack.com",
+    label: "Build to Launch (Substack)",
+    instructions: null,
+    multi_signal: false,
+  },
+  {
+    email: "hi@simple.ai",
+    label: "Simple AI",
+    instructions: null,
+    multi_signal: false,
+  },
 ];
 
 // ── Gmail auth ────────────────────────────────────────────────────────────────
