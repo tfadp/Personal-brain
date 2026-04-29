@@ -6,6 +6,8 @@ export interface Signal {
   source_title: string | null;
   raw_input: string;
   captured_at: string;
+  // Populated at query time — not stored in DB
+  linked_contacts?: { id: string; name: string }[];
 }
 
 export interface Interaction {
@@ -40,4 +42,27 @@ export interface Contact {
   contact_embedding?: number[] | null; // pgvector — populated by embed-contacts script
   created_at: string;
   updated_at: string;
+  // Populated at query time for single-contact detail view — not stored in DB
+  mentioned_in_signals?: {
+    id: string;
+    summary: string;
+    source_title: string | null;
+    source_url: string | null;
+    captured_at: string;
+  }[];
+}
+
+export interface Note {
+  id: string;
+  title: string;
+  body: string;
+  topics: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SignalContact {
+  signal_id: string;
+  contact_id: string;
+  created_at: string;
 }

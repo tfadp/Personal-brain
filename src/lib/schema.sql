@@ -75,6 +75,68 @@ create index if not exists interactions_contact_id_idx on interactions (contact_
 create index if not exists interactions_date_idx       on interactions (date desc);
 create index if not exists interactions_topics_idx     on interactions using gin (topics);
 
+-- ── Signal Contacts ───────────────────────────────────────────────────────────
+-- Many-to-many join between signals and contacts.
+-- Populated during ingestion to record which people a signal mentions.
+
+create table if not exists signal_contacts (
+  signal_id  uuid not null references signals(id)  on delete cascade,
+  contact_id uuid not null references contacts(id) on delete cascade,
+  created_at timestamptz default now(),
+  primary key (signal_id, contact_id)
+);
+
+-- Supports "signals mentioning this person" query path
+create index if not exists idx_signal_contacts_contact_id
+  on signal_contacts (contact_id);
+
+-- ── Notes ─────────────────────────────────────────────────────────────────────
+-- Markdown wiki / prose memory layer.
+-- Holds short distilled notes that survive across sessions,
+-- sitting alongside signals (raw inputs) and contacts (CRM).
+
+create or replace function set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create table if not exists notes (
+  id         uuid        default gen_random_uuid() primary key,
+  title      text        not null,
+  body       text        not null,  -- markdown content
+  topics     text[]      default '{}',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists idx_notes_topics
+  on notes using gin (topics);
+
+create index if not exists idx_notes_updated_at
+  on notes (updated_at desc);
+
+-- trigger: auto-stamp updated_at on every UPDATE
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_trigger
+    where tgname = 'trg_notes_updated_at'
+      and tgrelid = 'notes'::regclass
+  ) then
+    create trigger trg_notes_updated_at
+      before update on notes
+      for each row
+      execute function set_updated_at();
+  end if;
+end;
+$$;
+
 -- ── One-time city normalization (run manually in Supabase SQL editor) ─────────
 -- Normalises common abbreviations so location queries return consistent results.
 -- Preview first with SELECT before running the UPDATEs.

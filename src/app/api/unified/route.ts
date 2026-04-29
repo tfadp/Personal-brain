@@ -528,6 +528,47 @@ function sort_contacts_three_stars_first<T extends Partial<Contact>>(contacts: T
   );
 }
 
+// ── Signal ↔ Contact linking helpers ────────────────────────────────────────
+
+/**
+ * Batch-fetch linked contacts for a list of signal IDs — single Supabase round trip.
+ * Returns the same signals array with linked_contacts attached to each item.
+ * Used by query_signals and query_combined so the logic lives in one place.
+ */
+async function attach_linked_contacts(
+  signal_ids: string[],
+  signals: Signal[],
+): Promise<Signal[]> {
+  if (signal_ids.length === 0) return signals;
+
+  const supabase = getSupabase();
+  const { data: link_rows, error } = await supabase
+    .from("signal_contacts")
+    .select("signal_id, contacts(id, name)")
+    .in("signal_id", signal_ids);
+
+  if (error) {
+    // Non-fatal — log and return signals unchanged rather than breaking the query
+    console.error("[attach_linked_contacts] Lookup failed:", error.message);
+    return signals;
+  }
+
+  // Group by signal_id for O(1) attachment.
+  // Supabase types the nested select as an array — cast via unknown to our known shape.
+  const links_by_signal: Record<string, { id: string; name: string }[]> = {};
+  for (const row of (link_rows ?? [])) {
+    const contact = (row.contacts as unknown) as { id: string; name: string } | null;
+    if (!contact) continue;
+    if (!links_by_signal[row.signal_id]) links_by_signal[row.signal_id] = [];
+    links_by_signal[row.signal_id].push({ id: contact.id, name: contact.name });
+  }
+
+  return signals.map((s) => ({
+    ...s,
+    linked_contacts: links_by_signal[s.id] ?? [],
+  }));
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 // Detect if a query is specifically asking for follow-up contacts
@@ -592,10 +633,35 @@ ${JSON.stringify(supabase_candidates.map(c => ({ id: c.id, name: c.name, role: c
     }],
   });
 
+  if (res.stop_reason === "max_tokens") {
+    console.error("[unified] synthesis truncated by max_tokens — bump and retry");
+  }
   const raw = res.content[0].type === "text" ? res.content[0].text : "[]";
   const results = sort_contacts_three_stars_first(
     parse_json_array<Partial<Contact> & { relevance?: string }>(raw)
   );
+
+  // ── Single-contact enrichment: fetch signals that mention this person ──────
+  // Only done when exactly 1 contact matches — too expensive for multi-result queries.
+  if (results.length === 1 && results[0].id) {
+    const contact_id = results[0].id as string;
+    const { data: mention_rows, error: mention_error } = await supabase
+      .from("signal_contacts")
+      .select("signal_id, signals(id, summary, source_title, source_url, captured_at)")
+      .eq("contact_id", contact_id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (!mention_error && mention_rows && mention_rows.length > 0) {
+      const mentioned_in_signals = mention_rows
+        .map((row: { signal_id: string; signals: unknown }) => row.signals)
+        .filter(Boolean) as Contact["mentioned_in_signals"];
+      results[0] = { ...results[0], mentioned_in_signals };
+    } else if (mention_error) {
+      console.error("[unified] mention enrichment failed for contact", contact_id, mention_error);
+    }
+  }
+
   return { type: "contacts", results };
 }
 
@@ -660,6 +726,27 @@ async function handle_query_signals(input: string) {
     };
   }
 
+  // ── Batch-fetch linked contacts for all signals — single round trip ───────
+  const signal_ids = all.map((s) => s.id);
+  const signals_with_contacts = await attach_linked_contacts(signal_ids, all);
+
+  // Build the synthesis input — inject person mentions into each signal block so
+  // Claude can name-drop appropriately. This goes in the dynamic user message,
+  // NOT in the cached SIGNAL_SYNTHESIS_INSTRUCTIONS constant (that stays warm).
+  const signals_for_prompt = signals_with_contacts.map((s) => {
+    const base: Record<string, unknown> = {
+      id: s.id,
+      summary: s.summary,
+      topics: s.topics,
+      source_title: s.source_title,
+      captured_at: s.captured_at,
+    };
+    if (s.linked_contacts && s.linked_contacts.length > 0) {
+      base.mentions = s.linked_contacts.map((c) => c.name);
+    }
+    return base;
+  });
+
   // Synthesize — form a point of view, don't just list articles
   const synthesis_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -674,12 +761,15 @@ async function handle_query_signals(input: string) {
         },
         {
           type: "text",
-          text: `The user is asking: "${input}"\n\nEverything they have saved on this topic:\n${JSON.stringify(all, null, 2)}`,
+          text: `The user is asking: "${input}"\n\nEverything they have saved on this topic:\n${JSON.stringify(signals_for_prompt, null, 2)}`,
         },
       ] as ContentBlockParam[],
     }],
   });
 
+  if (synthesis_res.stop_reason === "max_tokens") {
+    console.error("[unified] synthesis truncated by max_tokens — bump and retry");
+  }
   const raw = synthesis_res.content[0].type === "text" ? synthesis_res.content[0].text : "{}";
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
   let parsed: {
@@ -695,18 +785,22 @@ async function handle_query_signals(input: string) {
   };
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not synthesize results." }; }
 
-  // Fetch full signal records for footnotes
-  const sig_by_id = Object.fromEntries(all.map((s) => [s.id, s]));
-  const signals = (parsed.signal_ids ?? []).map((id) => sig_by_id[id]).filter(Boolean);
+  // Fetch full signal records for footnotes — preserve linked_contacts from our earlier batch fetch
+  const sig_by_id = Object.fromEntries(signals_with_contacts.map((s) => [s.id, s]));
+  const cited_signals = (parsed.signal_ids ?? []).map((id) => sig_by_id[id]).filter(Boolean);
 
-  // Fetch full records with source_url
-  const ids = signals.map((s) => s.id).filter(Boolean);
-  let full_signals = signals;
+  // Fetch full records with source_url, then re-attach linked_contacts
+  const ids = cited_signals.map((s) => s.id).filter(Boolean);
+  let full_signals: Signal[] = cited_signals;
   if (ids.length > 0) {
     const { data: full } = await supabase.from("signals").select("*").in("id", ids);
     if (full) {
       const full_by_id = Object.fromEntries(full.map((s: Signal) => [s.id, s]));
-      full_signals = ids.map((id) => full_by_id[id]).filter(Boolean);
+      // Merge full DB record with the linked_contacts we already fetched
+      full_signals = ids.map((id) => ({
+        ...(full_by_id[id] ?? {}),
+        linked_contacts: sig_by_id[id]?.linked_contacts ?? [],
+      })).filter((s) => s.id);
     }
   }
 
@@ -755,6 +849,30 @@ async function handle_query_combined(input: string) {
   const raw_signals = signal_res.data ?? [];
   const raw_contacts = as_contacts(contact_res.data);
 
+  // ── Batch-fetch linked contacts for combined signals — single round trip ──
+  const combined_signal_ids = raw_signals.map((s: { id: string }) => s.id);
+  const combined_signals_with_contacts = await attach_linked_contacts(
+    combined_signal_ids,
+    raw_signals as Signal[],
+  );
+
+  // Inject person mentions into each signal block for the synthesis prompt.
+  // Dynamic content goes in the user message — NOT in the cached constant.
+  const signals_for_prompt = combined_signals_with_contacts.map((s) => {
+    const base: Record<string, unknown> = {
+      id: s.id,
+      summary: s.summary,
+      topics: s.topics,
+      source_title: s.source_title,
+      source_url: s.source_url,
+      captured_at: s.captured_at,
+    };
+    if (s.linked_contacts && s.linked_contacts.length > 0) {
+      base.mentions = s.linked_contacts.map((c) => c.name);
+    }
+    return base;
+  });
+
   // Single Claude call — think like a brain, not a library
   const synthesis_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -772,7 +890,7 @@ async function handle_query_combined(input: string) {
           text: `The user is asking: "${input}"
 
 Everything they have saved on this topic:
-${JSON.stringify(raw_signals, null, 2)}
+${JSON.stringify(signals_for_prompt, null, 2)}
 
 People in their network (pre-filtered as relevant):
 ${JSON.stringify(raw_contacts, null, 2)}`,
@@ -781,6 +899,9 @@ ${JSON.stringify(raw_contacts, null, 2)}`,
     }],
   });
 
+  if (synthesis_res.stop_reason === "max_tokens") {
+    console.error("[unified] synthesis truncated by max_tokens — bump and retry");
+  }
   const raw = synthesis_res.content[0].type === "text" ? synthesis_res.content[0].text : "{}";
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
   let parsed: {
@@ -798,9 +919,11 @@ ${JSON.stringify(raw_contacts, null, 2)}`,
   };
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not synthesize results." }; }
 
-  // Fetch full signal records for matched IDs
-  const sig_by_id = Object.fromEntries(raw_signals.map((s) => [s.id, s]));
-  const signals = (parsed.signal_ids ?? []).map((id) => sig_by_id[id]).filter(Boolean);
+  // Fetch full signal records for matched IDs — re-attach linked_contacts from batch fetch
+  const combined_sig_by_id = Object.fromEntries(combined_signals_with_contacts.map((s) => [s.id, s]));
+  const signals = (parsed.signal_ids ?? [])
+    .map((id) => combined_sig_by_id[id])
+    .filter(Boolean);
 
   // Fetch full contact records for matched IDs — in priority order
   const { data: full_contacts } = await supabase.from("contacts").select("*").in("id", parsed.contact_ids ?? []);
@@ -832,9 +955,12 @@ async function handle_ingest_signal(input: string) {
 
   const { content: enriched, source_url, source_title: detected_title } = await enrich_input(input);
 
+  // max_tokens: 800 — worst case is summary (200) + topics (100) + titles (100) +
+  // mentioned_people with 10 names (~150 chars) + JSON framing overhead.
+  // Sized for the largest plausible output per CLAUDE.md anti-pattern.
   const extract_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 512,
+    max_tokens: 800,
     messages: [{
       role: "user",
       content: `Extract the core knowledge from this input. Return ONLY valid JSON.
@@ -842,13 +968,31 @@ async function handle_ingest_signal(input: string) {
 Input: ${enriched}
 
 Return:
-{ "summary": "2-3 sentences of the actual insight — what it says and why it matters", "topics": ["3-6 specific tags"], "source_title": "title if identifiable, else null", "source_url": "URL if present, else null" }`,
+{
+  "summary": "2-3 sentences of the actual insight — what it says and why it matters",
+  "topics": ["3-6 specific tags"],
+  "source_title": "title if identifiable, else null",
+  "source_url": "URL if present, else null",
+  "mentioned_people": ["list of real people clearly named in the text — first + last name or a clearly identifiable single name. Only include real humans who appear as subjects or sources. Do NOT include companies, products, fictional characters, brands, or generic job titles like 'the CEO'. If nobody is clearly named, return an empty array."]
+}`,
     }],
   });
 
+  // Guard against silent truncation — log stop_reason per CLAUDE.md anti-pattern
+  const stop_reason = extract_res.stop_reason;
+  if (stop_reason === "max_tokens") {
+    console.error("[handle_ingest_signal] Claude response truncated (stop_reason=max_tokens) — mentioned_people may be incomplete");
+  }
+
   const raw = extract_res.content[0].type === "text" ? extract_res.content[0].text : "{}";
   const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  let parsed: { summary: string; topics: string[]; source_title: string | null; source_url: string | null };
+  let parsed: {
+    summary: string;
+    topics: string[];
+    source_title: string | null;
+    source_url: string | null;
+    mentioned_people?: string[];
+  };
   try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not process that input." }; }
 
   // Seed topics from the domain if we recognize it — no extra LLM cost
@@ -865,7 +1009,49 @@ Return:
   }).select().single();
 
   if (error) return { type: "error", message: error.message };
-  return { type: "ingested", signal: data };
+
+  const signal_id: string = data.id;
+
+  // ── Contact auto-linking ──────────────────────────────────────────────────
+  // For each person mentioned, do a conservative DB lookup.
+  // Exactly 1 match → link. 0 or 2+ → skip (wrong link is worse than no link).
+  const mentioned_names = (parsed.mentioned_people ?? []).slice(0, 20); // cap at 20 to bound DB queries
+  const linked_contacts: { id: string; name: string }[] = [];
+
+  if (mentioned_names.length > 0) {
+    const supabase = getSupabase();
+    for (const name of mentioned_names) {
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+
+      const { data: matches, error: lookup_error } = await supabase
+        .from("contacts")
+        .select("id, name")
+        .ilike("name", `%${trimmed}%`)
+        .limit(3);
+
+      if (lookup_error) {
+        console.error(`[handle_ingest_signal] Contact lookup failed for "${trimmed}":`, lookup_error.message);
+        continue;
+      }
+
+      if (matches && matches.length === 1) {
+        // Exactly one match — safe to link
+        const { error: upsert_error } = await supabase
+          .from("signal_contacts")
+          .upsert({ signal_id, contact_id: matches[0].id }, { onConflict: "signal_id,contact_id", ignoreDuplicates: true });
+
+        if (upsert_error) {
+          console.error(`[handle_ingest_signal] signal_contacts upsert failed for "${trimmed}":`, upsert_error.message);
+        } else {
+          linked_contacts.push({ id: matches[0].id, name: matches[0].name });
+        }
+      }
+      // 0 or 2+ matches → skip deliberately
+    }
+  }
+
+  return { type: "ingested", signal: data, linked_contacts };
 }
 
 async function handle_bulk_update(input: string) {
