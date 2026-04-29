@@ -54,3 +54,7 @@ BEGIN
   END IF;
 END;
 $$;
+
+-- Step 5 — disable RLS to match the other tables in this project
+-- This is a personal local-use app with no auth — anon key writes everything.
+ALTER TABLE notes DISABLE ROW LEVEL SECURITY;

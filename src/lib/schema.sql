@@ -90,6 +90,9 @@ create table if not exists signal_contacts (
 create index if not exists idx_signal_contacts_contact_id
   on signal_contacts (contact_id);
 
+-- Personal local-use app, no auth — match other tables (RLS off)
+alter table signal_contacts disable row level security;
+
 -- ── Notes ─────────────────────────────────────────────────────────────────────
 -- Markdown wiki / prose memory layer.
 -- Holds short distilled notes that survive across sessions,
@@ -136,6 +139,9 @@ begin
   end if;
 end;
 $$;
+
+-- Personal local-use app, no auth — match other tables (RLS off)
+alter table notes disable row level security;
 
 -- ── One-time city normalization (run manually in Supabase SQL editor) ─────────
 -- Normalises common abbreviations so location queries return consistent results.

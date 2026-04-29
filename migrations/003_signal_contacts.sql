@@ -18,3 +18,7 @@ CREATE TABLE IF NOT EXISTS signal_contacts (
 -- Supports the "signals mentioning this person" query path
 CREATE INDEX IF NOT EXISTS idx_signal_contacts_contact_id
   ON signal_contacts (contact_id);
+
+-- This is a personal local-use app with no auth — anon key writes everything.
+-- Match the other tables (contacts, signals, interactions) which all have RLS off.
+ALTER TABLE signal_contacts DISABLE ROW LEVEL SECURITY;
