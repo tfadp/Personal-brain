@@ -6,6 +6,8 @@ export interface Signal {
   source_title: string | null;
   raw_input: string;
   captured_at: string;
+  transcript: string | null;
+  source_type: 'youtube' | 'article' | null;
   // Populated at query time — not stored in DB
   linked_contacts?: { id: string; name: string }[];
 }
@@ -65,4 +67,12 @@ export interface SignalContact {
   signal_id: string;
   contact_id: string;
   created_at: string;
+}
+
+export interface SignalQuestion {
+  id: string;
+  signal_id: string;
+  question: string;
+  answer: string;
+  asked_at: string;
 }

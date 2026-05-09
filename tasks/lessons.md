@@ -1,5 +1,24 @@
 # Cortex — Lessons Learned
 
+## 2026-05-08
+
+### L28 — Long-form LLM output that doesn't stream feels broken
+**Problem:** First version of YouTube ingest waited for the full structured summary to come back, then rendered. ~51s of dead silence with a "Thinking..." spinner. User said "I dont love this" — felt like the app was hung.
+**Fix:** Refactored `handle_ingest_signal` into two parallel Claude calls — `anthropic.messages.stream()` for the summary (emits `ingest_delta` SSE events as text streams), and a non-streaming metadata extractor for topics/title/people. UI accumulates deltas into `streaming_summary` and renders progressively above the result.
+**Rule:** Any LLM call producing >2-3 sentences of user-visible prose must stream. The wall-clock time barely changes — but the perceived latency drops from "broken" to "fast." Use `anthropic.messages.stream()` and forward `text_delta` events through your SSE channel. Don't send a single final blob unless the output is short or invisible (JSON metadata).
+
+### L29 — Function signature changes ripple through fallback call sites
+**Problem:** Changed `handle_ingest_signal(input)` → `handle_ingest_signal(input, send)` for streaming. TypeScript caught the route call site at line 1715, but `handle_add_contact` had three internal fallback calls to `handle_ingest_signal(input)` (when JSON parsing failed) that all needed updating. Easy to miss because they're inside an unrelated function.
+**Fix:** Refactored `handle_add_contact` to also accept `send`, converted its three return-shapes (error/added/added_bulk) to `send(...); return;`, updated the route switch.
+**Rule:** Before changing a function's signature, grep for ALL call sites — not just the obvious one in the route. Internal fallbacks inside sibling handlers are easy to miss because they don't appear at the entry point.
+
+### L30 — env vars don't follow worktrees automatically
+**Problem:** First test in the youtube-qa worktree returned "Something went wrong. Try again." because `.env.local` is gitignored — the worktree had no env file at all, so `SUPABASE_URL`/`ANTHROPIC_API_KEY` were undefined.
+**Fix:** Symlinked `.env.local` from main repo into worktree: `ln -s ../Personal-brain/.env.local .env.local`. Shares secrets without copying.
+**Rule:** When you create a new git worktree, immediately symlink `.env.local` (and any other gitignored secrets file) from the main repo. Don't copy — symlink so updates propagate. Test for env vars in your first run, not after the first failure.
+
+---
+
 ## 2026-04-12
 
 ### L26 — Hardcoded alias maps can never be complete — use LLM expansion

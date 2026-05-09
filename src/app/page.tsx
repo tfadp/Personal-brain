@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Contact, Signal, Interaction } from "@/lib/types";
+import { Contact, Signal, Interaction, SignalQuestion } from "@/lib/types";
 
 type ResultType =
   | { type: "contacts"; results: (Contact & { relevance?: string })[] }
@@ -43,6 +43,186 @@ const EXAMPLES = [
   "Follow up with Sarah — said let's catch up",
 ];
 
+// Converts markdown-like summary text into JSX. Handles # (headline) and
+// ## (section) headings, plus plain lines. Bullets keep their dash.
+function render_youtube_summary(text: string): React.ReactNode[] {
+  return text.split("\n").map((line, i) => {
+    if (line.startsWith("# ") && !line.startsWith("## ")) {
+      return (
+        <h2 key={i} className="font-semibold text-zinc-900 text-lg mt-1 mb-3 leading-snug">
+          {line.slice(2)}
+        </h2>
+      );
+    }
+    if (line.startsWith("## ")) {
+      return (
+        <h3 key={i} className="font-semibold mt-4 mb-1 text-zinc-900 text-xs uppercase tracking-wide">
+          {line.slice(3)}
+        </h3>
+      );
+    }
+    return (
+      <span key={i} className="block text-sm text-zinc-800 leading-relaxed">
+        {line}
+      </span>
+    );
+  });
+}
+
+// Self-contained YouTube ingest card. Mounted with key={signal.id} at the
+// call site so React re-mounts (and resets state) on each new ingest.
+function YoutubeIngestCard({ signal }: { signal: Signal }) {
+  const [questions, setQuestions] = useState<SignalQuestion[]>([]);
+  const [pending_question, setPendingQuestion] = useState("");
+  const [is_asking, setIsAsking] = useState(false);
+  const [ask_error, setAskError] = useState<string | null>(null);
+
+  // Load Q&A history when the card mounts for this signal
+  useEffect(() => {
+    fetch(`/api/signals/${signal.id}/ask`)
+      .then((r) => (r.ok ? r.json() : { ok: false, questions: [] }))
+      .then((d) => {
+        if (d.ok && Array.isArray(d.questions)) {
+          setQuestions(d.questions);
+        }
+      })
+      .catch((err) => {
+        // Non-blocking — history failure shouldn't prevent asking new questions
+        console.error("Failed to load Q&A history:", err);
+      });
+  }, [signal.id]);
+
+  async function handle_ask(e: React.FormEvent) {
+    e.preventDefault();
+    const q = pending_question.trim();
+    if (!q) return;
+    setIsAsking(true);
+    setAskError(null);
+    try {
+      const res = await fetch(`/api/signals/${signal.id}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Request failed" }));
+        setAskError(err.error ?? err.message ?? "Something went wrong.");
+        return;
+      }
+      const data = await res.json();
+      // Prepend so newest appears first
+      setQuestions((prev) => [data.question, ...prev]);
+      setPendingQuestion("");
+    } catch {
+      setAskError("Something went wrong. Try again.");
+    } finally {
+      setIsAsking(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Summary card */}
+      <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl">
+        {/* Title row */}
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-xs font-medium bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
+            YouTube
+          </span>
+          {signal.source_url && (
+            <a
+              href={signal.source_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-zinc-600 hover:text-zinc-800 underline truncate"
+            >
+              {signal.source_url}
+            </a>
+          )}
+        </div>
+
+        {/* Structured summary — whitespace-pre-wrap on a wrapper preserves
+            blank lines between sections; heading lines get their own <h3> */}
+        {signal.summary && (
+          <div className="whitespace-pre-wrap">
+            {render_youtube_summary(signal.summary)}
+          </div>
+        )}
+
+        {/* Topics chips — same pattern as non-YouTube card */}
+        {signal.topics && signal.topics.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-3">
+            {signal.topics.map((t) => (
+              <span
+                key={t}
+                className="text-xs bg-zinc-200 text-zinc-600 px-2 py-0.5 rounded-full"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Q&A panel — hidden when no transcript was captured for this video */}
+      <div className="p-4 bg-white border border-zinc-200 rounded-xl space-y-3">
+        <p className="text-xs font-medium text-zinc-700">Ask about this video</p>
+
+        {signal.transcript === null ? (
+          <p className="text-xs italic text-zinc-500">
+            Transcript unavailable — Q&A not supported for this video
+          </p>
+        ) : (
+          <>
+            {/* Input row */}
+            <form onSubmit={handle_ask} className="flex gap-2">
+              <input
+                type="text"
+                value={pending_question}
+                onChange={(e) => setPendingQuestion(e.target.value)}
+                placeholder="What do you want to know?"
+                className="flex-1 text-sm bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-zinc-400 transition-colors"
+              />
+              <button
+                type="submit"
+                disabled={!pending_question.trim() || is_asking}
+                className="px-4 py-2 bg-zinc-900 text-white rounded-lg text-sm font-medium hover:bg-zinc-700 disabled:opacity-30 disabled:hover:bg-zinc-900 transition-colors flex-shrink-0"
+              >
+                {is_asking ? "Thinking..." : "Ask"}
+              </button>
+            </form>
+
+            {/* Inline error */}
+            {ask_error && (
+              <p className="text-xs text-red-500">{ask_error}</p>
+            )}
+
+            {/* Prior Q&As — newest first */}
+            {questions.length > 0 && (
+              <div className="space-y-3 pt-1">
+                {questions.map((q) => (
+                  <div key={q.id} className="border-t border-zinc-100 pt-3">
+                    <p className="text-sm font-medium text-zinc-900">
+                      <span className="text-xs uppercase tracking-wide text-zinc-400 mr-2">Q</span>
+                      {q.question}
+                    </p>
+                    <p className="text-sm text-zinc-700 mt-1 whitespace-pre-wrap leading-relaxed">
+                      {q.answer}
+                    </p>
+                    <p className="text-xs text-zinc-400 mt-1">
+                      {new Date(q.asked_at).toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -51,6 +231,7 @@ export default function Home() {
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [pending_input, setPendingInput] = useState<string>("");
   const [interactions, setInteractions] = useState<Interaction[]>([]);
+  const [streaming_summary, setStreamingSummary] = useState("");
   const [ramble_index, setRambleIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -98,6 +279,7 @@ export default function Home() {
     setLoading(true);
     setStatus("Thinking...");
     setResult(null);
+    setStreamingSummary("");
     try {
       const res = await fetch("/api/unified", {
         method: "POST",
@@ -118,7 +300,11 @@ export default function Home() {
           try {
             const data = JSON.parse(line.slice(6));
             if (data.type === "status") setStatus(data.message);
-            else { setResult(data); setStatus(null); }
+            else if (data.type === "ingest_delta") {
+              setStatus(null);
+              setStreamingSummary((s) => s + data.text);
+            }
+            else { setResult(data); setStatus(null); setStreamingSummary(""); }
           } catch { /* partial chunk */ }
         }
       }
@@ -160,7 +346,7 @@ export default function Home() {
     setPendingInput("");
   }
 
-  const has_result = !!result;
+  const has_result = !!result || !!streaming_summary;
 
   return (
     <div className={`flex-1 flex flex-col ${has_result ? "" : "justify-center"}`}>
@@ -252,6 +438,16 @@ export default function Home() {
           </div>
         )}
 
+        {/* ── Streaming summary (while ingest is in flight) ──────── */}
+        {!result && streaming_summary && (
+          <div className="pb-6">
+            <div className="rounded-xl border border-zinc-200 bg-white p-5 space-y-3">
+              {render_youtube_summary(streaming_summary)}
+              <div className="text-xs text-zinc-400 italic">Generating…</div>
+            </div>
+          </div>
+        )}
+
         {/* ── Results ────────────────────────────────────────────── */}
         {result && (
           <div className="pb-16">
@@ -262,7 +458,12 @@ export default function Home() {
             )}
 
             {/* Ingested signal */}
-            {result.type === "ingested" && (
+            {result.type === "ingested" && result.signal.source_type === "youtube" && (
+              // key=signal.id ensures the component re-mounts (and resets its
+              // local Q&A state) whenever a new YouTube URL is ingested
+              <YoutubeIngestCard key={result.signal.id} signal={result.signal} />
+            )}
+            {result.type === "ingested" && result.signal.source_type !== "youtube" && (
               <div className="p-4 bg-green-50 border border-green-200 rounded-xl">
                 <p className="text-green-800 text-sm font-medium mb-1">Saved to your brain</p>
                 <p className="text-green-900 text-sm">{result.signal.summary}</p>

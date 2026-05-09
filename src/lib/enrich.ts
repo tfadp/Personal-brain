@@ -1,5 +1,8 @@
 // Canonical URL enrichment — used by signal and unified routes.
-// Fetches article text (Jina Reader) or YouTube transcripts (Supadata).
+// Fetches article text (Jina Reader) or YouTube transcripts (Supadata,
+// with a youtube-transcript fallback when Supadata returns nothing).
+
+import { YoutubeTranscript } from "youtube-transcript";
 
 export function is_url(text: string): boolean {
   try {
@@ -17,7 +20,7 @@ export function extract_youtube_id(url: string): string | null {
   return match ? match[1] : null;
 }
 
-async function fetch_youtube_transcript(video_id: string): Promise<string | null> {
+async function fetch_supadata(video_id: string): Promise<string | null> {
   const api_key = process.env.SUPADATA_API_KEY;
   if (!api_key) return null;
   try {
@@ -25,12 +28,36 @@ async function fetch_youtube_transcript(video_id: string): Promise<string | null
       `https://api.supadata.ai/v1/youtube/transcript?videoId=${video_id}&text=true`,
       { headers: { "x-api-key": api_key }, signal: AbortSignal.timeout(15000) }
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn(`[fetch_supadata] HTTP ${res.status} for video ${video_id}`);
+      return null;
+    }
     const data = await res.json();
     return data.content ?? data.transcript ?? null;
-  } catch {
+  } catch (err) {
+    console.warn("[fetch_supadata] error:", err instanceof Error ? err.message : err);
     return null;
   }
+}
+
+// Fallback: scrapes captions directly. Works locally most of the time;
+// less reliable on data-center IPs (Vercel) where YouTube blocks scrapers.
+async function fetch_youtube_transcript_fallback(video_id: string): Promise<string | null> {
+  try {
+    const segments = await YoutubeTranscript.fetchTranscript(video_id);
+    if (!segments || segments.length === 0) return null;
+    return segments.map((s) => s.text).join(" ");
+  } catch (err) {
+    console.warn("[fetch_youtube_transcript_fallback] error:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+// Try Supadata first (more reliable); fall back to youtube-transcript scraper.
+async function fetch_youtube_transcript(video_id: string): Promise<string | null> {
+  const primary = await fetch_supadata(video_id);
+  if (primary) return primary;
+  return await fetch_youtube_transcript_fallback(video_id);
 }
 
 async function fetch_article(url: string): Promise<{ title: string | null; text: string } | null> {
@@ -53,6 +80,8 @@ export interface EnrichedInput {
   content: string;
   source_url: string | null;
   source_title: string | null;
+  transcript: string | null;
+  source_type: 'youtube' | 'article' | null;
 }
 
 /**
@@ -64,18 +93,22 @@ export async function enrich_input(raw: string): Promise<EnrichedInput> {
   const trimmed = raw.trim();
 
   if (!is_url(trimmed)) {
-    return { content: trimmed, source_url: null, source_title: null };
+    return { content: trimmed, source_url: null, source_title: null, transcript: null, source_type: null };
   }
 
   const video_id = extract_youtube_id(trimmed);
   if (video_id) {
-    const transcript = await fetch_youtube_transcript(video_id);
+    const raw_transcript = await fetch_youtube_transcript(video_id);
     return {
-      content: transcript
-        ? `YouTube video URL: ${trimmed}\n\nTranscript:\n${transcript}`
+      content: raw_transcript
+        ? `YouTube video URL: ${trimmed}\n\nTranscript:\n${raw_transcript}`
         : `YouTube video URL: ${trimmed}\n\n(Transcript unavailable.)`,
       source_url: trimmed,
       source_title: null,
+      // Persist raw transcript separately so callers can store it for Q&A;
+      // remains null if fetch failed, but source_type is always 'youtube' here.
+      transcript: raw_transcript,
+      source_type: 'youtube',
     };
   }
 
@@ -85,6 +118,8 @@ export async function enrich_input(raw: string): Promise<EnrichedInput> {
       content: `Article URL: ${trimmed}\nTitle: ${article.title ?? "Unknown"}\n\nContent:\n${article.text}`,
       source_url: trimmed,
       source_title: article.title,
+      transcript: null,
+      source_type: 'article',
     };
   }
 
@@ -92,5 +127,7 @@ export async function enrich_input(raw: string): Promise<EnrichedInput> {
     content: `URL: ${trimmed}\n\n(Could not fetch — paste the article text directly.)`,
     source_url: trimmed,
     source_title: null,
+    transcript: null,
+    source_type: null,
   };
 }

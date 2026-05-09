@@ -5,7 +5,9 @@ create table signals (
   source_url text,
   source_title text,
   raw_input text not null,
-  captured_at timestamp default now()
+  captured_at timestamp default now(),
+  transcript text,
+  source_type text  -- 'youtube' | 'article' | null
 );
 
 create table contacts (
@@ -153,3 +155,25 @@ alter table notes disable row level security;
 -- UPDATE contacts SET city = 'Washington'  WHERE lower(city) IN ('dc', 'd.c.', 'washington dc', 'washington d.c.');
 -- UPDATE contacts SET city = 'London'      WHERE lower(city) IN ('london, uk', 'london, england');
 -- UPDATE contacts SET city = 'Chicago'     WHERE lower(city) IN ('chi');
+
+-- ── Signal Questions ──────────────────────────────────────────────────────────
+-- Persists Q&A history for signals (one row per question asked).
+-- Scoped to a signal via FK so deleting the signal cascades all questions.
+
+create index if not exists idx_signals_source_type
+  on signals (source_type)
+  where source_type is not null;
+
+create table if not exists signal_questions (
+  id         uuid        default gen_random_uuid() primary key,
+  signal_id  uuid        not null references signals(id) on delete cascade,
+  question   text        not null,
+  answer     text        not null,
+  asked_at   timestamptz default now()
+);
+
+create index if not exists idx_signal_questions_signal_id
+  on signal_questions (signal_id, asked_at desc);
+
+-- Personal local-use app, no auth — match other tables (RLS off)
+alter table signal_questions disable row level security;

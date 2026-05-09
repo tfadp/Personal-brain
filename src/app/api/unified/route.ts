@@ -10,6 +10,15 @@ import { apply_contact_update, apply_contact_update_by_id, UpdatePayload } from 
 
 const anthropic = new Anthropic();
 
+// Max chars of transcript stuffed into the YouTube summary prompt — a 2hr video
+// can produce ~120k chars of raw captions; we only need the first portion for a
+// good structured summary.
+const YOUTUBE_TRANSCRIPT_PROMPT_LIMIT = 50_000;
+
+// Max chars of transcript stored in the signals DB row — handles ~10hr videos
+// without blowing out the row size.
+const TRANSCRIPT_DB_STORAGE_LIMIT = 500_000;
+
 // ── Cacheable instruction prefixes ────────────────────────────────────────────
 // These text blocks are stable across every call and identical per handler.
 // Marking them with cache_control lets Anthropic reuse the prefix tokens at
@@ -948,22 +957,130 @@ ${JSON.stringify(raw_contacts, null, 2)}`,
   };
 }
 
-async function handle_ingest_signal(input: string) {
+// Streaming-aware ingest: takes a `send` callback so the YouTube branch can emit
+// progressive `ingest_delta` events while Claude generates the long-form summary.
+// Returns void — all results (final or error) are emitted via `send`.
+async function handle_ingest_signal(input: string, send: (data: object) => void): Promise<void> {
   if (input.length > 50000) {
-    return { type: "error", message: "Input too long (max 50 000 characters)" };
+    send({ type: "error", message: "Input too long (max 50 000 characters)" });
+    return;
   }
 
-  const { content: enriched, source_url, source_title: detected_title } = await enrich_input(input);
+  const {
+    content: enriched,
+    source_url,
+    source_title: detected_title,
+    transcript,
+    source_type,
+  } = await enrich_input(input);
 
-  // max_tokens: 800 — worst case is summary (200) + topics (100) + titles (100) +
-  // mentioned_people with 10 names (~150 chars) + JSON framing overhead.
-  // Sized for the largest plausible output per CLAUDE.md anti-pattern.
-  const extract_res = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 800,
-    messages: [{
-      role: "user",
-      content: `Extract the core knowledge from this input. Return ONLY valid JSON.
+  const is_youtube_with_transcript = source_type === "youtube" && transcript !== null;
+
+  let summary_text: string;
+  let metadata: {
+    topics: string[];
+    source_title: string | null;
+    source_url: string | null;
+    mentioned_people?: string[];
+  };
+
+  if (is_youtube_with_transcript) {
+    // YouTube path: TWO Claude calls in parallel.
+    // Call A streams the long-form markdown summary so the user sees text appear
+    // in real time. Call B extracts metadata (topics + names) in one shot — small
+    // and fast, finishes well before the streaming summary is done.
+    const truncated_transcript = transcript.slice(0, YOUTUBE_TRANSCRIPT_PROMPT_LIMIT);
+
+    const summary_promise = (async (): Promise<string> => {
+      let buffer = "";
+      const stream = await anthropic.messages.stream({
+        model: "claude-sonnet-4-6",
+        // max_tokens: 4000 — long-form prose summary with quotes pulled from transcript.
+        max_tokens: 4000,
+        messages: [{
+          role: "user",
+          content: `You are given a YouTube video transcript. Produce a long-form, narrative summary in the EXACT structure below — this matches the user's preferred format. Return ONLY plain markdown — no JSON, no code fences, no preamble.
+
+The output must follow this structure, IN ORDER:
+
+# <a punchy descriptive headline that captures the core idea — NOT just the episode title>
+
+## CONTEXT & SETUP
+One full paragraph (4–7 sentences) of prose. What is this conversation about, who is in it (if identifiable), and why is it compelling? Set the stage for someone who hasn't watched.
+
+## KEY INSIGHTS & ARGUMENTS
+Two to four full paragraphs of prose (NOT bullet points). Walk through the main arguments, the supporting evidence, the mechanisms or frameworks discussed, and the surprising counterintuitive points. Use specific numbers, names, and concrete examples wherever the transcript provides them.
+
+## MEMORABLE MOMENTS & QUOTES
+Pull 2–4 actual direct quotes from the transcript (use quotation marks). For each quote, add 1–2 sentences of surrounding context explaining what was being discussed and why the quote matters. Quotes must be verbatim from the transcript — do not paraphrase or invent.
+
+## ACTIONABLE TAKEAWAYS
+One to two paragraphs of prose. What is the practical framework or set of moves the listener should take away? What should change in how they think or act after this conversation?
+
+Transcript:
+${truncated_transcript}`,
+        }],
+      });
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          const delta = event.delta.text;
+          buffer += delta;
+          send({ type: "ingest_delta", text: delta });
+        }
+      }
+      const final_msg = await stream.finalMessage();
+      if (final_msg.stop_reason === "max_tokens") {
+        console.warn("[handle_ingest_signal] Streaming summary truncated (stop_reason=max_tokens) — bump max_tokens");
+      }
+      return buffer.trim();
+    })();
+
+    const metadata_promise = (async () => {
+      // max_tokens: 600 — small JSON: topics + title + mentioned_people only.
+      const res = await anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 600,
+        messages: [{
+          role: "user",
+          content: `Given this YouTube transcript, extract metadata. Return ONLY valid JSON.
+
+Transcript:
+${truncated_transcript}
+
+Return:
+{
+  "topics": ["3-6 specific tags"],
+  "source_title": "podcast/show name + episode title if identifiable from the transcript, else null",
+  "source_url": "URL if present, else null",
+  "mentioned_people": ["list of real people clearly named in the transcript — first + last name or a clearly identifiable single name. Only include real humans who appear as subjects or sources. Do NOT include companies, products, fictional characters, brands, or generic job titles like 'the CEO'. If nobody is clearly named, return an empty array."]
+}`,
+        }],
+      });
+      if (res.stop_reason === "max_tokens") {
+        console.error("[handle_ingest_signal] Metadata Claude response truncated — mentioned_people may be incomplete");
+      }
+      const raw = res.content[0].type === "text" ? res.content[0].text : "{}";
+      const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+      try {
+        return JSON.parse(clean) as typeof metadata;
+      } catch {
+        return { topics: [], source_title: null, source_url: null, mentioned_people: [] };
+      }
+    })();
+
+    const [s, m] = await Promise.all([summary_promise, metadata_promise]);
+    summary_text = s;
+    metadata = m;
+  } else {
+    // Standard path — articles, pasted text, plain URLs without transcripts.
+    // max_tokens: 800 — worst case is summary (200) + topics (100) + titles (100) +
+    // mentioned_people with 10 names (~150 chars) + JSON framing overhead.
+    const extract_res = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 800,
+      messages: [{
+        role: "user",
+        content: `Extract the core knowledge from this input. Return ONLY valid JSON.
 
 Input: ${enriched}
 
@@ -975,47 +1092,55 @@ Return:
   "source_url": "URL if present, else null",
   "mentioned_people": ["list of real people clearly named in the text — first + last name or a clearly identifiable single name. Only include real humans who appear as subjects or sources. Do NOT include companies, products, fictional characters, brands, or generic job titles like 'the CEO'. If nobody is clearly named, return an empty array."]
 }`,
-    }],
-  });
+      }],
+    });
 
-  // Guard against silent truncation — log stop_reason per CLAUDE.md anti-pattern
-  const stop_reason = extract_res.stop_reason;
-  if (stop_reason === "max_tokens") {
-    console.error("[handle_ingest_signal] Claude response truncated (stop_reason=max_tokens) — mentioned_people may be incomplete");
+    if (extract_res.stop_reason === "max_tokens") {
+      console.error("[handle_ingest_signal] Claude response truncated (stop_reason=max_tokens) — mentioned_people may be incomplete");
+    }
+
+    const raw = extract_res.content[0].type === "text" ? extract_res.content[0].text : "{}";
+    const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
+    let parsed: { summary: string; topics: string[]; source_title: string | null; source_url: string | null; mentioned_people?: string[] };
+    try { parsed = JSON.parse(clean); } catch {
+      send({ type: "error", message: "Could not process that input." });
+      return;
+    }
+    summary_text = parsed.summary;
+    metadata = {
+      topics: parsed.topics,
+      source_title: parsed.source_title,
+      source_url: parsed.source_url,
+      mentioned_people: parsed.mentioned_people,
+    };
   }
 
-  const raw = extract_res.content[0].type === "text" ? extract_res.content[0].text : "{}";
-  const clean = raw.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/i, "").trim();
-  let parsed: {
-    summary: string;
-    topics: string[];
-    source_title: string | null;
-    source_url: string | null;
-    mentioned_people?: string[];
-  };
-  try { parsed = JSON.parse(clean); } catch { return { type: "error", message: "Could not process that input." }; }
-
   // Seed topics from the domain if we recognize it — no extra LLM cost
-  const final_url = parsed.source_url ?? source_url;
+  const final_url = metadata.source_url ?? source_url;
   const domain_topics = topics_from_url(final_url);
-  const merged_topics = [...new Set([...(parsed.topics ?? []), ...domain_topics])];
+  const merged_topics = [...new Set([...(metadata.topics ?? []), ...domain_topics])];
 
   const { data, error } = await getSupabase().from("signals").insert({
-    summary: parsed.summary,
+    summary: summary_text,
     topics: merged_topics,
-    source_title: detected_title ?? parsed.source_title,
+    source_title: detected_title ?? metadata.source_title,
     source_url: final_url,
     raw_input: input.trim(),
+    transcript: transcript ? transcript.slice(0, TRANSCRIPT_DB_STORAGE_LIMIT) : null,
+    source_type: source_type ?? null,
   }).select().single();
 
-  if (error) return { type: "error", message: error.message };
+  if (error) {
+    send({ type: "error", message: error.message });
+    return;
+  }
 
   const signal_id: string = data.id;
 
   // ── Contact auto-linking ──────────────────────────────────────────────────
   // For each person mentioned, do a conservative DB lookup.
   // Exactly 1 match → link. 0 or 2+ → skip (wrong link is worse than no link).
-  const mentioned_names = (parsed.mentioned_people ?? []).slice(0, 20); // cap at 20 to bound DB queries
+  const mentioned_names = (metadata.mentioned_people ?? []).slice(0, 20); // cap at 20 to bound DB queries
   const linked_contacts: { id: string; name: string }[] = [];
 
   if (mentioned_names.length > 0) {
@@ -1036,7 +1161,6 @@ Return:
       }
 
       if (matches && matches.length === 1) {
-        // Exactly one match — safe to link
         const { error: upsert_error } = await supabase
           .from("signal_contacts")
           .upsert({ signal_id, contact_id: matches[0].id }, { onConflict: "signal_id,contact_id", ignoreDuplicates: true });
@@ -1047,11 +1171,10 @@ Return:
           linked_contacts.push({ id: matches[0].id, name: matches[0].name });
         }
       }
-      // 0 or 2+ matches → skip deliberately
     }
   }
 
-  return { type: "ingested", signal: data, linked_contacts };
+  send({ type: "ingested", signal: data, linked_contacts });
 }
 
 async function handle_bulk_update(input: string) {
@@ -1174,7 +1297,7 @@ Only include fields explicitly mentioned.`,
   return { type: "updated", action: result.action, contact: result.contact };
 }
 
-async function handle_add_contact(input: string) {
+async function handle_add_contact(input: string, send: (data: object) => void): Promise<void> {
   const today = new Date().toISOString().split("T")[0];
   const parse_res = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -1202,10 +1325,10 @@ Omit fields that are null — only include fields with actual values:
     const objects = [...clean.matchAll(/\{[^{}]+\}/g)].flatMap((m) => {
       try { return [JSON.parse(m[0])]; } catch { return []; }
     });
-    if (objects.length === 0) return handle_ingest_signal(input);
+    if (objects.length === 0) return handle_ingest_signal(input, send);
     parsed = objects;
   }
-  if (!Array.isArray(parsed) || parsed.length === 0) return handle_ingest_signal(input);
+  if (!Array.isArray(parsed) || parsed.length === 0) return handle_ingest_signal(input, send);
 
   const wants_follow_up = /\bfollow.?up\b|\breach out\b|\bping\b/i.test(input);
 
@@ -1233,7 +1356,7 @@ Omit fields that are null — only include fields with actual values:
       };
     });
 
-  if (rows.length === 0) return handle_ingest_signal(input);
+  if (rows.length === 0) return handle_ingest_signal(input, send);
 
   // Skip rows whose email already exists in the DB to avoid unique constraint errors
   const emails_to_check = rows.map((r) => r.email).filter(Boolean) as string[];
@@ -1249,21 +1372,26 @@ Omit fields that are null — only include fields with actual values:
   const skipped = rows.length - new_rows.length;
 
   if (new_rows.length === 0) {
-    return { type: "error", message: `All ${rows.length} contact${rows.length > 1 ? "s" : ""} already exist.` };
+    send({ type: "error", message: `All ${rows.length} contact${rows.length > 1 ? "s" : ""} already exist.` });
+    return;
   }
 
   const { data, error } = await getSupabase().from("contacts").insert(new_rows).select();
-  if (error) return { type: "error", message: error.message };
+  if (error) {
+    send({ type: "error", message: error.message });
+    return;
+  }
 
   const skip_note = skipped > 0 ? ` (${skipped} already existed, skipped)` : "";
   if (data.length === 1) {
-    return { type: "added", contact: data[0] };
+    send({ type: "added", contact: data[0] });
+    return;
   }
-  return {
+  send({
     type: "added_bulk",
     contacts: data,
     action: `Added ${data.length} contact${data.length > 1 ? "s" : ""}${skip_note}`,
-  };
+  });
 }
 
 // ── Log interaction handler ───────────────────────────────────────────────────
@@ -1589,9 +1717,9 @@ export async function POST(request: NextRequest) {
           case "query_contacts": send(await handle_query_contacts(input)); break;
           case "query_signals":  send(await handle_query_signals(input)); break;
           case "query_combined": send(await handle_query_combined(input)); break;
-          case "ingest_signal":   send(await handle_ingest_signal(input)); break;
+          case "ingest_signal":   await handle_ingest_signal(input, send); break;
           case "update_contact":  send(await handle_update_contact(input, contact_id)); break;
-          case "add_contact":     send(await handle_add_contact(input)); break;
+          case "add_contact":     await handle_add_contact(input, send); break;
           case "log_interaction": send(await handle_log_interaction(input, contact_id)); break;
           default: send({ type: "error", message: "Could not understand that." });
         }

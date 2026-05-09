@@ -1,11 +1,13 @@
 # Cortex — Task Board
 
 ## Session State
-- **Branch:** `main`
-- **Last test result:** 12/12 Vitest pass, `npm run build` clean — confirmed 2026-04-12
-- **Deployed:** Yes — personal-brain-two.vercel.app, all commits pushed and live
-- **Blockers:** None
+- **Branch:** `youtube-qa` (worktree at `/Users/danporter/Desktop/Personal-brain-youtube-qa`, off main)
+- **Last test result:** `npx tsc --noEmit` clean, `npm run lint` clean (only 2 pre-existing unused-fn warnings) — confirmed 2026-05-08
+- **Deployed:** Not yet — feature branch, not merged to main, not on Vercel
+- **Blockers:** None — streaming verified locally (user said "result is great")
 - **Pending decisions:**
+  - **Merge `youtube-qa` → `main`**: feature is working locally, ready to commit + merge + deploy.
+  - YouTube transcript fallback (youtube-transcript pkg) likely won't work on Vercel data-center IPs. Supadata is primary; if Supadata fails in prod, transcript will be null and Q&A panel hides itself (intended behavior).
   - Google Calendar sync needs one-time auth: run `npm run auth:gcal`, add GCAL_REFRESH_TOKEN to Vercel, hit `/api/calendar-sync?full=1` for first sweep. Instructions in SETUP-SYNC.md.
   - iMessage import needs: (1) run schema SQL to add phone column, (2) grant Full Disk Access to terminal, (3) `npm run import:imessage`. Instructions in SETUP-SYNC.md.
   - Newsletter cron (7am UTC daily) is live — verify first overnight run produced signals.
@@ -15,16 +17,30 @@
 
 ## Active Tasks (next up)
 
-1. **Run Google Calendar auth** — `npm run auth:gcal`, add token to Vercel, redeploy, hit `?full=1`. See SETUP-SYNC.md.
-2. **Run iMessage import** — Add phone column to Supabase, grant Full Disk Access, `npm run import:imessage --dry-run` first. See SETUP-SYNC.md.
-3. **Verify newsletter cron** — Check Vercel logs or hit `/api/newsletter-sync` to confirm signals from 4 senders are landing.
-4. **Spend time on /rank** — Rate contacts (1/2/3, S to skip). Populates contact_quality for better search ranking.
-5. **Signal page nav link** — Add Signal to the nav bar (currently only reachable via `/signal`).
-6. **Delete signal** — Add a delete button on saved signals.
+1. **Commit + merge `youtube-qa` → `main` + deploy** — uncommitted changes on the worktree (route.ts, page.tsx, enrich.ts, schema.sql, types.ts, package.json, package-lock.json, migrations/005, src/app/api/signals/[id]/ask/). Migration 005 is already applied in Supabase. After merge, push to main → Vercel deploys.
+2. **Run Google Calendar auth** — `npm run auth:gcal`, add token to Vercel, redeploy, hit `?full=1`. See SETUP-SYNC.md.
+3. **Run iMessage import** — Add phone column to Supabase, grant Full Disk Access, `npm run import:imessage --dry-run` first. See SETUP-SYNC.md.
+4. **Verify newsletter cron** — Check Vercel logs or hit `/api/newsletter-sync` to confirm signals from 4 senders are landing.
+5. **Spend time on /rank** — Rate contacts (1/2/3, S to skip). Populates contact_quality for better search ranking.
+6. **Signal page nav link** — Add Signal to the nav bar (currently only reachable via `/signal`).
+7. **Delete signal** — Add a delete button on saved signals.
 
 ---
 
 ## Completed ✅
+
+### Session — 2026-05-08 (YouTube Q&A feature, Path A)
+- [x] Migration 005: added `signals.transcript`, `signals.source_type`, `signal_questions` table (FK CASCADE, RLS off) — applied in Supabase
+- [x] `src/lib/types.ts`: added transcript/source_type to Signal, added `SignalQuestion` interface
+- [x] `src/lib/enrich.ts`: Supadata primary, `youtube-transcript` scraper fallback, returns transcript + source_type
+- [x] `src/app/api/unified/route.ts`: rewrote `handle_ingest_signal` to take `send` callback and run TWO parallel Claude calls — streaming summary (markdown only, max_tokens 4000) + non-streaming metadata extractor — emitting `ingest_delta` events
+- [x] Refactored `handle_add_contact` to also accept `send` (its fallback calls handle_ingest_signal)
+- [x] `src/app/api/signals/[id]/ask/route.ts`: GET history + POST ask, transcript-grounded ("Not in the transcript." for off-topic)
+- [x] `src/app/page.tsx`: `render_youtube_summary` helper for `# headline` + `## section` markdown, `YoutubeIngestCard` self-contained component, Q&A panel with auto-loaded history, transcript-null UI gate, error message gate
+- [x] Streaming UI: `streaming_summary` state, SSE handler appends `ingest_delta` text, progressive card renders before final result
+- [x] Reviewer pass + fix agent: 3 blockers + 4 importants resolved (source_url prompt injection, empty-answer guard, transcript-null UI gate, error key mismatch, max_tokens, magic-number constants, console.warn vs error)
+- [x] User added SUPADATA_API_KEY to .env.local (.env.local symlinked from main repo into worktree)
+- [x] Live tested end-to-end: paste URL → progressive summary → ask question → answer grounded in transcript ("result is great")
 
 ### Session — 2026-04-12
 - [x] Replace hardcoded alias maps with Claude query expansion (ba84c1d)
